@@ -1,0 +1,45 @@
+# CLAUDE.md
+
+Guidance for Claude Code when working in this repository.
+
+## What this is
+
+`vinowatch`: a Rust tray daemon (and console tool) that lists processes using OpenVINO, with their CPU, RAM and, from the `ivpu` driver, system-wide NPU load. It knows the other vino projects (vinoWhisper, vinoSpeak, vinoPop, vinoAuthFace) by command line. User docs are the README; don't duplicate them here.
+
+## Layout
+
+- `src/detect.rs`: is this process an OpenVINO user, which vino app is it. Takes the `/proc` root as a parameter.
+- `src/npu.rs`: the busy-time counter and the percentage between polls.
+- `src/sample.rs`: one poll, plus the `--json` shape.
+- `src/tray.rs`: ksni StatusNotifierItem, behind the default `tray` feature.
+- `src/cli.rs`: flags.
+
+## Commands
+
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo clippy --no-default-features --all-targets -- -D warnings
+cargo fmt --check
+cargo deny check
+```
+
+CI runs those, plus `shellcheck install.sh` and `systemd-analyze --user verify vinowatch.service`.
+
+## Gotchas
+
+- **sysinfo lists every thread as a process.** `Sampler::poll` skips them with `thread_kind()`; without that, each multithreaded app shows up once per thread. `finds_a_process_by_its_mapped_library` guards it.
+- **`comm` is truncated to 15 characters and Python apps are `python3`.** Name apps from the command line, never `Process::name()`.
+- **The tray runtime needs `enable_all()`.** ksni's zbus needs tokio IO; with only `enable_time()` it panics at startup. No unit test reaches this, so check the tray by running it.
+- **CPU and NPU are deltas.** The first poll is a baseline, so both the console and tray call `poll()` once and sleep before the first real one.
+- No per-process NPU numbers exist: the `ivpu` driver only has a device counter. `NPU open` (an `/dev/accel/*` fd) is a hint, not a measurement.
+
+## Testing on the linuxlab VM
+
+No NPU there, so the NPU path is only covered by the fake-sysfs tests; never claim it works on hardware. Real OpenVINO is in the `.venv`s of vinoWhisper and vinoSpeak, so a process that does `import openvino; openvino.Core()` exercises the maps detection for real. The tray can be checked in the headless sway/waybar session (`busctl --user` shows the registered item).
+
+## CI and repo rules
+
+- Every Actions `uses:` is pinned to a commit SHA with a version comment.
+- A `deny.toml` advisory ignore needs a written reason next to it.
+- `release.yml` publishes on `v*` tags and refuses one that doesn't match `Cargo.toml`.

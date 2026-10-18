@@ -1,0 +1,27 @@
+[package]
+name = "vinowatch"
+version = "0.1.0"
+edition = "2024"
+description = "Shows how much CPU, RAM and NPU the OpenVINO apps on your machine are using, in the terminal or the system tray"
+license = "MIT"
+repository = "https://github.com/karanshukla/vinoWatch"
+readme = "README.md"
+keywords = ["openvino", "npu", "monitor", "tray", "intel"]
+categories = ["command-line-utilities", "hardware-support"]
+exclude = [".github/"]
+
+[features]
+default = ["tray"]
+# The system tray front-end (StatusNotifierItem over D-Bus). Without it the
+# binary is console-only and has no D-Bus dependency.
+tray = ["dep:ksni", "dep:tokio"]
+
+[dependencies]
+ksni = { version = "0.3.6", optional = true }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+tokio = { version = "1.53.1", optional = true, features = ["rt", "macros", "time"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

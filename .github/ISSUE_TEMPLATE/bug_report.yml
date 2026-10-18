@@ -1,0 +1,33 @@
+name: Bug report
+description: A process is missing or misattributed, a number is wrong, or the tray won't show.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: json
+    attributes:
+      label: vinowatch --json --once
+      description: Paste the output while the OpenVINO app is running. Process names and pids only; no file contents.
+      render: json
+    validations:
+      required: true
+
+  - type: input
+    id: npu
+    attributes:
+      label: NPU and kernel
+      description: "`ls /sys/class/accel/*/device/` and `uname -r`, or say there is no NPU."
+      placeholder: Intel Core Ultra 7 155H, ivpu, 6.14.2
+
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop and distro (for tray problems)
+      placeholder: Fedora 43 KDE Plasma 6
