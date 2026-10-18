@@ -20,10 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-process RAM is PSS (shared pages split between their users), so it adds up; resident size is the fallback.
 - Memory limits from cgroup v2 (containers, units with `MemoryMax`) count: when a listed app is closer to its limit than the machine is to running out, "available" and the warning use the limit.
 - Low-memory warning: the tray icon changes when available RAM falls under `--warn-below` percent (default 15, 0 disables). Informational only.
-
+- Tray and app icons in the vino house style (three meters on the dark tile): idle, active and low-memory states, as themed `-symbolic` icons with drawn pixmaps as the fallback. `--install-icons DIR` writes them, and `install.sh` runs it.
 - The tray refuses to start a second copy in the same session (a lock in `$XDG_RUNTIME_DIR`).
 - `-V` for `--version`, as the other vino tools take.
 - vinoPop started through its new `vinopop` launcher is recognised.
+
+### Changed
+
+- The tray is filed as an application status item, like the other vino trays, and the menu shows the version. Underscores in process names are no longer swallowed by the menu.
 
 ### Fixed
 
