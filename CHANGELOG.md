@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Memory limits from cgroup v2 (containers, units with `MemoryMax`) count: when a listed app is closer to its limit than the machine is to running out, "available" and the warning use the limit.
 - Low-memory warning: the tray icon changes when available RAM falls under `--warn-below` percent (default 15, 0 disables). Informational only.
 
+- The tray refuses to start a second copy in the same session (a lock in `$XDG_RUNTIME_DIR`).
+- `-V` for `--version`, as the other vino tools take.
+- vinoPop started through its new `vinopop` launcher is recognised.
+
 ### Fixed
 
 - Each thread of a multithreaded app was listed as its own process.

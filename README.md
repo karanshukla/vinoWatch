@@ -6,7 +6,7 @@ A small tray daemon that shows what the OpenVINO apps on your machine cost: CPU,
 |---|---|
 | [vinoWhisper](https://github.com/karanshukla/vinoWhisper) | `vinowhisper-server`, `-caption`, `-dictate`, `-replay` |
 | [vinoSpeak](https://github.com/karanshukla/vinoSpeak) | `vinospeak` |
-| [vinoPop](https://github.com/karanshukla/vinoPop) | the `main.py` run from its checkout |
+| [vinoPop](https://github.com/karanshukla/vinoPop) | its `vinopop` launcher, or a `main.py` in its checkout |
 | [vinoAuthFace](https://github.com/karanshukla/vinoAuthFace) | `vinoauthface`, `vinoauthface-auth` |
 
 Anything else that loads `libopenvino*` is listed too, just without an app name.
@@ -43,7 +43,7 @@ Build without the tray (and its D-Bus dependency) with `cargo build --release --
 
 ## How it works
 
-- **Which processes.** A process is listed if it has a `libopenvino*` file mapped (`/proc/<pid>/maps`), or `openvino` in its name. Names are matched on the file name only. Apps are told apart by command line, because the Python ones all show up as `python3`; vinoPop is recognised by its working directory.
+- **Which processes.** A process is listed if it has a `libopenvino*` file mapped (`/proc/<pid>/maps`), or `openvino` in its name. Names are matched on the file name only. Apps are told apart by command line, because the Python ones all show up as `python3`; vinoPop is recognised by its checkout path, in the command line or the working directory.
 - **NPU load.** The `ivpu` driver's `npu_busy_time_us` counter, as busy time over wall-clock time between two polls. It is a device-wide number: the driver has no per-process counter. A process holding `/dev/accel/*` open is marked `NPU open`, which tells you who is probably using it, not how much.
 - **RAM.** Per process this is PSS from `/proc/<pid>/smaps_rollup`: shared pages, like the mapped OpenVINO libraries, are split between the processes using them, so the figures add up to what the apps really hold. Where that file can't be read it falls back to resident size, which counts shared pages in every process (`--json` says which with `ram_kind`). "Available" is `MemAvailable` from `/proc/meminfo`, the kernel's own estimate of what can be used without swapping. `/proc/meminfo` ignores container and `MemoryMax` limits, so vinoWatch also reads the cgroup v2 limit above each listed process (`memory.max` against `memory.current`, minus inactive file cache as `docker stats` does) and reports whichever has the smaller share left. Then the line says `cgroup limit` instead of `RAM`, and the low-memory warning is judged against that limit (`--json` has `ram_limit`: `cgroup` or `host`). Only cgroup v2 is read.
 - **CPU.** From `sysinfo`. It is a delta, so the first poll only sets a baseline and nothing is shown for it.

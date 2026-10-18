@@ -2,6 +2,8 @@
 
 mod cli;
 mod detect;
+#[cfg(feature = "tray")]
+mod instance;
 mod npu;
 mod sample;
 #[cfg(feature = "tray")]
@@ -34,18 +36,39 @@ fn main() -> ExitCode {
 fn run(mode: Mode, interval: Duration, warn_below: u8) -> ExitCode {
     match mode {
         #[cfg(feature = "tray")]
-        Mode::Tray => match tray::run(interval, warn_below) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(msg) => {
-                eprintln!("vinowatch: {msg}\nWithout a tray host, run `vinowatch --console`.");
-                ExitCode::FAILURE
-            }
-        },
+        Mode::Tray => {
+            // Keeps the lock until the tray exits. A second copy exits
+            // cleanly, so the unit doesn't restart it in a loop.
+            let _instance = match instance::lock_path().map(|p| instance::acquire(&p)) {
+                Some(Ok(None)) => {
+                    eprintln!("vinowatch: the tray is already running");
+                    return ExitCode::SUCCESS;
+                }
+                Some(Ok(held)) => held,
+                Some(Err(e)) => {
+                    eprintln!("vinowatch: couldn't take the single-instance lock: {e}");
+                    None
+                }
+                None => None,
+            };
+            tray_main(interval, warn_below)
+        }
         #[cfg(not(feature = "tray"))]
         Mode::Tray => unreachable!("cli only picks the tray when it is compiled in"),
         Mode::Console { json, once } => {
             console(json, once, interval, warn_below);
             ExitCode::SUCCESS
+        }
+    }
+}
+
+#[cfg(feature = "tray")]
+fn tray_main(interval: Duration, warn_below: u8) -> ExitCode {
+    match tray::run(interval, warn_below) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("vinowatch: {msg}\nWithout a tray host, run `vinowatch --console`.");
+            ExitCode::FAILURE
         }
     }
 }

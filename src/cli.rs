@@ -14,7 +14,7 @@ pub const USAGE: &str = concat!(
        --once      Poll once and exit (implies --console)\n  \
        --warn-below PERCENT\n              Flag low memory when available RAM falls under PERCENT of\n              the total (0 turns it off, default 15)\n  \
        -h, --help  Show this help\n  \
-       --version   Show the version\n\n\
+       -V, --version\n              Show the version\n\n\
      SECONDS is the poll interval, 1 to 3600 (default 2)."
 );
 
@@ -45,7 +45,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
-            "--version" => return Ok(Command::Version),
+            "-V" | "--version" => return Ok(Command::Version),
             "--console" => console = true,
             "--json" => json = true,
             "--once" => once = true,
@@ -177,5 +177,6 @@ mod tests {
         assert!(p(&["--nope", "--help"]).is_err());
         assert_eq!(p(&["--help", "--nope"]), Ok(Command::Help));
         assert_eq!(p(&["--version"]), Ok(Command::Version));
+        assert_eq!(p(&["-V"]), Ok(Command::Version));
     }
 }

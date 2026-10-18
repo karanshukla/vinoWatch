@@ -36,7 +36,9 @@ impl fmt::Display for Project {
 /// Python apps all show up as `python3`, so the command line is what names them.
 pub fn classify(cmdline: &[String], cwd: Option<&str>) -> Option<Project> {
     let mut haystack = cmdline.join(" ").to_lowercase();
-    // vinoPop is `python3 main.py`; only its checkout directory says so.
+    // vinoPop runs as `python3 <checkout>/vinopop` (vinoPop#70), or as
+    // `python3 main.py` from older launchers; then its checkout path, in the
+    // command line or the working directory, is what names it.
     if let Some(cwd) = cwd {
         haystack.push(' ');
         haystack.push_str(&cwd.to_lowercase());
@@ -197,6 +199,23 @@ mod tests {
         ];
         for (argv, want) in cases {
             assert_eq!(classify(&args(argv), None), Some(want), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn vinopop_is_found_by_its_launcher_or_checkout_path() {
+        for argv in [
+            &["/usr/bin/python3", "/home/u/vinopop/vinopop", "--no-tray"][..],
+            &[
+                "/home/u/src/vinoPop/.venv/bin/python",
+                "/home/u/src/vinoPop/main.py",
+            ],
+        ] {
+            assert_eq!(
+                classify(&args(argv), Some("/home/u")),
+                Some(Project::VinoPop),
+                "{argv:?}"
+            );
         }
     }
 
