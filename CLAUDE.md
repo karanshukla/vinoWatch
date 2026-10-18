@@ -32,6 +32,8 @@ CI runs those, plus `shellcheck install.sh` and `systemd-analyze --user verify v
 - **`comm` is truncated to 15 characters and Python apps are `python3`.** Name apps from the command line, never `Process::name()`.
 - **The tray runtime needs `enable_all()`.** ksni's zbus needs tokio IO; with only `enable_time()` it panics at startup. No unit test reaches this, so check the tray by running it.
 - **CPU and NPU are deltas.** The first poll is a baseline, so both the console and tray call `poll()` once and sleep before the first real one.
+- **Add RAM up as PSS, not RSS.** The apps share the mapped OpenVINO libraries, so summed resident sizes overstate the total. `Proc::ram_is_pss` records which one a figure is.
+- **Low memory is informational.** It changes the tray icon and tooltip only; nothing stops or restarts an app, and nothing pops up.
 - No per-process NPU numbers exist: the `ivpu` driver only has a device counter. `NPU open` (an `/dev/accel/*` fd) is a hint, not a measurement.
 
 ## Testing on the linuxlab VM
