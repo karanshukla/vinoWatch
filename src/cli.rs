@@ -12,6 +12,7 @@ pub const USAGE: &str = concat!(
        --console   Print to the terminal instead of showing a tray icon\n  \
        --json      Like --console, one JSON object per poll\n  \
        --once      Poll once and exit (implies --console)\n  \
+       --warn-below PERCENT\n              Flag low memory when available RAM falls under PERCENT of\n              the total (0 turns it off, default 15)\n  \
        -h, --help  Show this help\n  \
        --version   Show the version\n\n\
      SECONDS is the poll interval, 1 to 3600 (default 2)."
@@ -27,19 +28,34 @@ pub enum Mode {
 pub enum Command {
     Help,
     Version,
-    Run { mode: Mode, interval: Duration },
+    Run {
+        mode: Mode,
+        interval: Duration,
+        warn_below: u8,
+    },
 }
+
+pub const DEFAULT_WARN_BELOW: u8 = 15;
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let (mut console, mut json, mut once) = (false, false, false);
     let mut interval = None;
-    for arg in args {
+    let mut warn_below = DEFAULT_WARN_BELOW;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
             "--version" => return Ok(Command::Version),
             "--console" => console = true,
             "--json" => json = true,
             "--once" => once = true,
+            "--warn-below" => {
+                let value = args.next().ok_or("--warn-below needs a percentage")?;
+                warn_below = match value.parse::<u8>() {
+                    Ok(p @ 0..=100) => p,
+                    _ => return Err(format!("{value} isn't a percentage from 0 to 100")),
+                };
+            }
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             seconds => {
                 if interval.is_some() {
@@ -64,6 +80,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     Ok(Command::Run {
         mode,
         interval: interval.unwrap_or(Duration::from_secs(2)),
+        warn_below,
     })
 }
 
@@ -92,7 +109,8 @@ mod tests {
                     json: true,
                     once: false
                 },
-                interval: Duration::from_secs(5)
+                interval: Duration::from_secs(5),
+                warn_below: 15,
             })
         );
         assert_eq!(
@@ -102,7 +120,8 @@ mod tests {
                     json: false,
                     once: true
                 },
-                interval: Duration::from_secs(2)
+                interval: Duration::from_secs(2),
+                warn_below: 15,
             })
         );
     }
@@ -117,6 +136,25 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn warn_below() {
+        let Ok(Command::Run { warn_below, .. }) = p(&["--warn-below", "25"]) else {
+            panic!()
+        };
+        assert_eq!(warn_below, 25);
+        let Ok(Command::Run { warn_below, .. }) = p(&["--warn-below", "0", "3"]) else {
+            panic!()
+        };
+        assert_eq!(warn_below, 0);
+        for bad in [
+            &["--warn-below"][..],
+            &["--warn-below", "101"],
+            &["--warn-below", "x"],
+        ] {
+            assert!(p(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

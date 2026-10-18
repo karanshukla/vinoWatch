@@ -14,7 +14,11 @@ pub struct Proc {
     pub name: String,
     pub project: Option<Project>,
     pub cpu_percent: f32,
+    /// PSS when readable, else resident size (see `ram_is_pss`).
     pub ram_bytes: u64,
+    /// Shared pages are split between their users, so these add up. Resident
+    /// size, the fallback, counts them in every process.
+    pub ram_is_pss: bool,
     /// Has an `/dev/accel` node open, so it is the one talking to the NPU.
     pub npu_open: bool,
 }
@@ -25,6 +29,10 @@ pub struct Snapshot {
     /// is no `ivpu` device or this is the first poll.
     pub npu_percent: Option<f64>,
     pub procs: Vec<Proc>,
+    /// `(total, available)` bytes of system RAM.
+    pub mem: Option<(u64, u64)>,
+    /// Available RAM is under the `--warn-below` share of the total.
+    pub low_memory: bool,
 }
 
 pub struct Sampler {
@@ -32,11 +40,14 @@ pub struct Sampler {
     meter: Meter,
     proc_root: PathBuf,
     accel_root: PathBuf,
+    warn_below_percent: u8,
 }
 
 impl Sampler {
-    pub fn new() -> Self {
-        Self::with_roots("/proc".into(), "/sys/class/accel".into())
+    pub fn new(warn_below_percent: u8) -> Self {
+        let mut sampler = Self::with_roots("/proc".into(), "/sys/class/accel".into());
+        sampler.warn_below_percent = warn_below_percent;
+        sampler
     }
 
     pub fn with_roots(proc_root: PathBuf, accel_root: PathBuf) -> Self {
@@ -45,6 +56,7 @@ impl Sampler {
             meter: Meter::new(),
             proc_root,
             accel_root,
+            warn_below_percent: 0,
         }
     }
 
@@ -85,12 +97,14 @@ impl Sampler {
                     return None;
                 }
                 let cwd = p.cwd().map(Path::to_string_lossy);
+                let pss = detect::pss_bytes(&self.proc_root, pid);
                 Some(Proc {
                     pid,
+                    ram_bytes: pss.unwrap_or_else(|| p.memory()),
+                    ram_is_pss: pss.is_some(),
                     project: detect::classify(&cmdline, cwd.as_deref()),
                     name,
                     cpu_percent: p.cpu_usage(),
-                    ram_bytes: p.memory(),
                     npu_open: detect::holds_npu(&self.proc_root, pid),
                 })
             })
@@ -108,7 +122,16 @@ impl Sampler {
         let npu_percent = self
             .meter
             .update(npu::busy_us(&self.accel_root), Instant::now());
-        Snapshot { npu_percent, procs }
+        let mem = detect::meminfo(&self.proc_root);
+        let low_memory = mem.is_some_and(|(total, available)| {
+            available.saturating_mul(100) < total.saturating_mul(self.warn_below_percent.into())
+        });
+        Snapshot {
+            npu_percent,
+            procs,
+            mem,
+            low_memory,
+        }
     }
 }
 
@@ -128,20 +151,49 @@ impl Snapshot {
                     None => "null".into(),
                 };
                 format!(
-                    "{{\"pid\":{},\"name\":{},\"project\":{},\"cpu_percent\":{:.1},\"ram_mib\":{},\"npu_open\":{}}}",
+                    "{{\"pid\":{},\"name\":{},\"project\":{},\"cpu_percent\":{:.1},\"ram_mib\":{},\"ram_kind\":\"{}\",\"npu_open\":{}}}",
                     p.pid,
                     json_string(&p.name),
                     project,
                     p.cpu_percent,
                     p.ram_bytes / (1024 * 1024),
+                    if p.ram_is_pss { "pss" } else { "rss" },
                     p.npu_open,
                 )
             })
             .collect();
+        let mib = |b: u64| b / (1024 * 1024);
+        let (total, available) = match self.mem {
+            Some((t, a)) => (mib(t).to_string(), mib(a).to_string()),
+            None => ("null".into(), "null".into()),
+        };
         format!(
-            "{{\"npu_percent\":{npu},\"processes\":[{}]}}",
+            "{{\"npu_percent\":{npu},\"ram_openvino_mib\":{},\"ram_total_mib\":{total},\"ram_available_mib\":{available},\"low_memory\":{},\"processes\":[{}]}}",
+            mib(self.openvino_bytes()),
+            self.low_memory,
             procs.join(",")
         )
+    }
+
+    /// What the listed processes hold between them. Exact with PSS; with the
+    /// resident-size fallback it can count shared pages more than once.
+    pub fn openvino_bytes(&self) -> u64 {
+        self.procs.iter().map(|p| p.ram_bytes).sum()
+    }
+
+    /// `OpenVINO apps hold 2.1 GiB of 7.6 GiB RAM, 4.9 GiB available`
+    pub fn ram_label(&self) -> String {
+        let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
+        let used = gib(self.openvino_bytes());
+        match self.mem {
+            Some((total, available)) => format!(
+                "OpenVINO apps hold {used:.1} GiB of {:.1} GiB RAM, {:.1} GiB available{}",
+                gib(total),
+                gib(available),
+                if self.low_memory { " (low)" } else { "" },
+            ),
+            None => format!("OpenVINO apps hold {used:.1} GiB RAM"),
+        }
     }
 
     pub fn npu_label(&self) -> String {
@@ -202,16 +254,19 @@ mod tests {
                 project: Some(Project::VinoWhisper),
                 cpu_percent: 12.5,
                 ram_bytes: 812 * 1024 * 1024,
+                ram_is_pss: true,
                 npu_open: true,
             }],
+            mem: Some((8192 * 1024 * 1024, 2048 * 1024 * 1024)),
+            low_memory: false,
         };
         assert_eq!(
             snap.to_json(),
-            r#"{"npu_percent":37.2,"processes":[{"pid":4242,"name":"python3","project":"vinoWhisper","cpu_percent":12.5,"ram_mib":812,"npu_open":true}]}"#
+            r#"{"npu_percent":37.2,"ram_openvino_mib":812,"ram_total_mib":8192,"ram_available_mib":2048,"low_memory":false,"processes":[{"pid":4242,"name":"python3","project":"vinoWhisper","cpu_percent":12.5,"ram_mib":812,"ram_kind":"pss","npu_open":true}]}"#
         );
         assert_eq!(
             Snapshot::default().to_json(),
-            r#"{"npu_percent":null,"processes":[]}"#
+            r#"{"npu_percent":null,"ram_openvino_mib":0,"ram_total_mib":null,"ram_available_mib":null,"low_memory":false,"processes":[]}"#
         );
     }
 
@@ -223,6 +278,7 @@ mod tests {
             project: None,
             cpu_percent: 0.0,
             ram_bytes: 0,
+            ram_is_pss: false,
             npu_open: false,
         };
         assert_eq!(p.label(), "x pid 1: CPU 0.0%, RAM 0 MiB");
@@ -256,5 +312,56 @@ mod tests {
         assert_eq!(snap.procs.len(), 1);
         assert_eq!(snap.npu_percent, None);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ram_label_and_low_memory() {
+        let mut snap = Snapshot {
+            procs: vec![Proc {
+                pid: 1,
+                name: "x".into(),
+                project: None,
+                cpu_percent: 0.0,
+                ram_bytes: 1536 * 1024 * 1024,
+                ram_is_pss: true,
+                npu_open: false,
+            }],
+            mem: Some((8 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024)),
+            ..Default::default()
+        };
+        assert_eq!(
+            snap.ram_label(),
+            "OpenVINO apps hold 1.5 GiB of 8.0 GiB RAM, 4.0 GiB available"
+        );
+        snap.low_memory = true;
+        assert!(snap.ram_label().ends_with("(low)"));
+        snap.mem = None;
+        assert_eq!(snap.ram_label(), "OpenVINO apps hold 1.5 GiB RAM");
+    }
+
+    /// Writes a fake proc root with only a meminfo.
+    fn low_memory_for(available_kib: u64, warn_below: u8) -> bool {
+        let root = std::env::temp_dir().join(format!(
+            "vinowatch-low-{}-{available_kib}-{warn_below}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("meminfo"),
+            format!("MemTotal: 1000 kB\nMemAvailable: {available_kib} kB\n"),
+        )
+        .unwrap();
+        let mut sampler = Sampler::with_roots(root.clone(), root.join("no-accel"));
+        sampler.warn_below_percent = warn_below;
+        let low = sampler.poll().low_memory;
+        std::fs::remove_dir_all(&root).unwrap();
+        low
+    }
+
+    #[test]
+    fn low_memory_threshold() {
+        assert!(low_memory_for(149, 15));
+        assert!(!low_memory_for(150, 15)); // exactly at the threshold is fine
+        assert!(!low_memory_for(0, 0)); // 0 turns the warning off
     }
 }
