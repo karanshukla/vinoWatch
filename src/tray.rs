@@ -9,6 +9,10 @@ use ksni::{Category, ToolTip, TrayMethods};
 use crate::icon::{self, State};
 use crate::sample::{Sampler, Snapshot};
 
+/// Below this the NPU counts as idle; the busy counter ticks a little even
+/// between inferences.
+const NPU_BUSY_PERCENT: f64 = 1.0;
+
 struct WatchTray {
     snap: Snapshot,
 }
@@ -21,6 +25,12 @@ impl WatchTray {
             self.snap.npu_label(),
             if apps == 1 { "" } else { "es" }
         )
+    }
+
+    /// Something is running on OpenVINO: a listed process, or NPU load from
+    /// one we couldn't list (another user's, or gone before the poll saw it).
+    fn in_use(&self) -> bool {
+        !self.snap.procs.is_empty() || self.snap.npu_percent.is_some_and(|p| p >= NPU_BUSY_PERCENT)
     }
 
     fn state(&self) -> State {
@@ -74,8 +84,12 @@ impl ksni::Tray for WatchTray {
         pixmaps(self.state())
     }
 
+    // Passive, as vinoWhisper does when idle: the host hides the icon (Plasma
+    // files it under the expander, waybar drops it) until a vino app runs.
     fn status(&self) -> ksni::Status {
-        if self.snap.low_memory {
+        if !self.in_use() {
+            ksni::Status::Passive
+        } else if self.snap.low_memory {
             ksni::Status::NeedsAttention
         } else {
             ksni::Status::Active
@@ -185,5 +199,23 @@ mod tests {
         tray.snap.low_memory = true;
         assert_eq!(tray.state(), State::LowMemory);
         assert_eq!(pixmaps(State::LowMemory).len(), 6);
+    }
+
+    #[test]
+    fn the_icon_hides_while_nothing_uses_openvino() {
+        use ksni::Tray;
+        let mut tray = WatchTray {
+            snap: Snapshot::default(),
+        };
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        // Low memory on its own is not about the vino apps.
+        tray.snap.low_memory = true;
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        tray.snap.npu_percent = Some(0.4);
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        tray.snap.npu_percent = Some(30.0);
+        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
+        tray.snap.low_memory = false;
+        assert_eq!(tray.status(), ksni::Status::Active);
     }
 }
