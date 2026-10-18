@@ -36,4 +36,4 @@ Add its marker to the `MARKERS` table in `src/detect.rs`, a variant to `Project`
 
 ## Releases
 
-Versions follow Cargo.toml. Bump it, run `git cliff -c cliff.toml --tag vX.Y.Z -o CHANGELOG.md`, commit, then push the tag `vX.Y.Z`. `release.yml` refuses a tag that doesn't match Cargo.toml, builds static x86_64 and aarch64 binaries, and publishes them with `SHA256SUMS`.
+Versions follow Cargo.toml. Bump it, run `git cliff -c cliff.toml --tag vX.Y.Z -o CHANGELOG.md`, commit, then push the tag `vX.Y.Z`. `release.yml` refuses a tag that doesn't match Cargo.toml, isn't on main, or has no `## [X.Y.Z]` section in CHANGELOG.md (that section becomes the release notes), builds static x86_64 and aarch64 binaries, and publishes them with `SHA256SUMS`.

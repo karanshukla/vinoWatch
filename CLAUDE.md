@@ -24,7 +24,7 @@ cargo fmt --check
 cargo deny check
 ```
 
-CI runs those, plus `shellcheck install.sh` and `systemd-analyze --user verify vinowatch.service`.
+CI runs those, plus `shellcheck install.sh`, `systemd-analyze --user verify vinowatch.service` and a `cargo +1.95 check` against `rust-version` (sysinfo sets that floor; raise both together).
 
 ## Gotchas
 
