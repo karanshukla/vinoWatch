@@ -1,0 +1,31 @@
+# Checked in CI (`deny` job). vinoWatch only reads /proc and sysfs, but it runs
+# as the user for the whole session, so the dependency list stays short.
+[graph]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # ksni 0.3 builds on zbus 5, whose split crates were merged into zbus 6.
+    # Same code, new home; revisit when ksni moves to zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; pulled in by ksni" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; pulled in by ksni" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; pulled in by ksni" },
+]
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+# Add a per-crate exception with a written reason, not a global allow.
+exceptions = [
+    # Public-domain dedication. The tray's StatusNotifierItem.
+    { crate = "ksni", allow = ["Unlicense"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# Only crates.io. A git dependency or a second registry is a new party to trust.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

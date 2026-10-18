@@ -1,64 +1,77 @@
-use std::collections::HashMap;
-use std::fs;
+//! vinoWatch: CPU, RAM and NPU use of the OpenVINO apps on this machine.
+
+mod cli;
+mod detect;
+mod npu;
+mod sample;
+#[cfg(feature = "tray")]
+mod tray;
+
+use std::process::ExitCode;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
-use sysinfo::{ProcessesToUpdate, System};
+use std::time::Duration;
 
-/// Returns true if the process looks like an OpenVINO user (by name or loaded libraries).
-fn uses_openvino(pid: u32, name: &str) -> bool {
-    if name.to_lowercase().contains("openvino") {
-        return true;
-    }
-    fs::read_to_string(format!("/proc/{pid}/maps"))
-        .map(|m| m.lines().any(|l| l.to_lowercase().contains("libopenvino")))
-        .unwrap_or(false)
-}
+use cli::{Command, Mode};
+use sample::Sampler;
 
-/// Cumulative NPU busy time in microseconds (Intel ivpu driver), if available.
-fn npu_busy_us() -> Option<u64> {
-    for entry in fs::read_dir("/sys/class/accel").ok()?.flatten() {
-        let p = entry.path().join("device/npu_busy_time_us");
-        if let Some(v) = fs::read_to_string(p).ok().and_then(|s| s.trim().parse().ok()) {
-            return Some(v);
+fn main() -> ExitCode {
+    match cli::parse(std::env::args().skip(1)) {
+        Ok(Command::Help) => println!("{}", cli::USAGE),
+        Ok(Command::Version) => println!("vinowatch {}", env!("CARGO_PKG_VERSION")),
+        Ok(Command::Run { mode, interval }) => return run(mode, interval),
+        Err(msg) => {
+            eprintln!("vinowatch: {msg}\n\n{}", cli::USAGE);
+            return ExitCode::from(2);
         }
     }
-    None
+    ExitCode::SUCCESS
 }
 
-fn main() {
-    let interval = Duration::from_secs(
-        std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(2),
-    );
-    let mut sys = System::new_all();
-    let mut last_npu: Option<(u64, Instant)> = npu_busy_us().map(|v| (v, Instant::now()));
-    println!("vinoWatch: monitoring OpenVINO processes every {}s", interval.as_secs());
+fn run(mode: Mode, interval: Duration) -> ExitCode {
+    match mode {
+        #[cfg(feature = "tray")]
+        Mode::Tray => match tray::run(interval) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(msg) => {
+                eprintln!("vinowatch: {msg}\nWithout a tray host, run `vinowatch --console`.");
+                ExitCode::FAILURE
+            }
+        },
+        #[cfg(not(feature = "tray"))]
+        Mode::Tray => unreachable!("cli only picks the tray when it is compiled in"),
+        Mode::Console { json, once } => {
+            console(json, once, interval);
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn console(json: bool, once: bool, interval: Duration) {
+    if !json {
+        println!(
+            "vinoWatch: monitoring OpenVINO processes every {}s",
+            interval.as_secs()
+        );
+    }
+    let mut sampler = Sampler::new();
+    // CPU % and NPU % are deltas; this poll only sets the baseline.
+    sampler.poll();
     loop {
         sleep(interval);
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        let mut found: HashMap<u32, (String, f32, u64)> = HashMap::new();
-        for (pid, p) in sys.processes() {
-            let name = p.name().to_string_lossy().to_string();
-            if uses_openvino(pid.as_u32(), &name) {
-                found.insert(pid.as_u32(), (name, p.cpu_usage(), p.memory()));
+        let snap = sampler.poll();
+        if json {
+            println!("{}", snap.to_json());
+        } else {
+            println!("{}", snap.npu_label());
+            if snap.procs.is_empty() {
+                println!("  no OpenVINO processes found");
+            }
+            for p in &snap.procs {
+                println!("  {}", p.label());
             }
         }
-        let npu = match (npu_busy_us(), last_npu) {
-            (Some(now), Some((prev, t))) => {
-                let el = t.elapsed().as_micros().max(1) as f64;
-                last_npu = Some((now, Instant::now()));
-                Some((now.saturating_sub(prev) as f64 / el * 100.0).min(100.0))
-            }
-            _ => None,
-        };
-        match npu {
-            Some(n) => println!("NPU: {n:.1}%"),
-            None => println!("NPU: unavailable"),
-        }
-        if found.is_empty() {
-            println!("  no OpenVINO processes found");
-        }
-        for (pid, (name, cpu, mem)) in &found {
-            println!("  {name} (pid {pid}): CPU {cpu:.1}%, RAM {} MiB", mem / 1048576);
+        if once {
+            return;
         }
     }
 }
