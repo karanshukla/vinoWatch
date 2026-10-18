@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-18
+
 ### Added
 
 - System tray icon (StatusNotifierItem): NPU load and process count in the tooltip, one menu row per process.
@@ -27,10 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The tray hides itself (StatusNotifierItem `Passive`, as vinoWhisper's does) unless an OpenVINO process is listed or the NPU is busy.
 - The tray is filed as an application status item, like the other vino trays, and the menu shows the version. Underscores in process names are no longer swallowed by the menu.
 
 ### Fixed
 
+- `vinoauthface-auth` never showed: it is setgid, so its `/proc` maps can't be read. Such a process is now listed when its executable is a vino one.
 - Each thread of a multithreaded app was listed as its own process.
 - A file with `libopenvino` anywhere in its path counted as the library; only the file name does now.
 - The NPU figure never appeared if the counter wasn't readable at startup, and a reset counter was reported as 0 busy.
