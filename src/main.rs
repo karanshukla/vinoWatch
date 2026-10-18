@@ -3,8 +3,12 @@
 mod cli;
 mod detect;
 #[cfg(feature = "tray")]
+mod icon;
+#[cfg(feature = "tray")]
 mod instance;
 mod npu;
+#[cfg(feature = "tray")]
+mod raster;
 mod sample;
 #[cfg(feature = "tray")]
 mod tray;
@@ -20,6 +24,19 @@ fn main() -> ExitCode {
     match cli::parse(std::env::args().skip(1)) {
         Ok(Command::Help) => println!("{}", cli::USAGE),
         Ok(Command::Version) => println!("vinowatch {}", env!("CARGO_PKG_VERSION")),
+        #[cfg(feature = "tray")]
+        Ok(Command::InstallIcons(dir)) => match icon::install(&dir) {
+            Ok(paths) => paths.iter().for_each(|p| println!("{}", p.display())),
+            Err(e) => {
+                eprintln!(
+                    "vinowatch: couldn't write the icons under {}: {e}",
+                    dir.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        #[cfg(not(feature = "tray"))]
+        Ok(Command::InstallIcons(_)) => unreachable!("cli refuses it without the tray"),
         Ok(Command::Run {
             mode,
             interval,

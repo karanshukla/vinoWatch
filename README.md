@@ -11,7 +11,7 @@ A small tray daemon that shows what the OpenVINO apps on your machine cost: CPU,
 
 Anything else that loads `libopenvino*` is listed too, just without an app name.
 
-Hover the tray icon for the NPU load, a process count and how much RAM the OpenVINO apps hold against what the machine has free; click it for one row per process. If available RAM drops under 15% of the total, the icon turns into a warning (`--warn-below PERCENT` changes that, `0` turns it off). It only changes the icon and tooltip: no popups, and nothing is ever stopped for you. The tray needs a StatusNotifierItem host: KDE Plasma and Waybar have one, GNOME needs the AppIndicator extension.
+Hover the tray icon for the NPU load, a process count and how much RAM the OpenVINO apps hold against what the machine has free; click it for one row per process. The icon is three meters in the vino apps' style: white with nothing to watch, green while an OpenVINO app runs, and amber if available RAM drops under 15% of the total (`--warn-below PERCENT` changes that, `0` turns it off). It only changes the icon and tooltip: no popups, and nothing is ever stopped for you. The tray needs a StatusNotifierItem host: KDE Plasma and Waybar have one, GNOME needs the AppIndicator extension.
 
 ## Install
 
@@ -19,7 +19,7 @@ Hover the tray icon for the NPU load, a process count and how much RAM the OpenV
 curl -fsSL https://raw.githubusercontent.com/karanshukla/vinoWatch/main/install.sh | sh
 ```
 
-This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin` and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes both.
+This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin`, its icons in `~/.local/share/icons/hicolor`, and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes both.
 
 ## Console
 

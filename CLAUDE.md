@@ -12,6 +12,7 @@ Guidance for Claude Code when working in this repository.
 - `src/npu.rs`: the busy-time counter and the percentage between polls.
 - `src/sample.rs`: one poll, plus the `--json` shape.
 - `src/tray.rs`: ksni StatusNotifierItem, behind the default `tray` feature.
+- `src/icon.rs`, `src/raster.rs`: the icons, drawn from one shape list as tray pixmaps and as the SVGs `--install-icons` writes. Same palette and grid as vinoAuthFace's tray. `data/` holds the generated SVGs; after changing a shape run `VINOWATCH_BLESS_ICONS=1 cargo test`.
 - `src/cli.rs`: flags.
 
 ## Commands

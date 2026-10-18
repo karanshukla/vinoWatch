@@ -1,5 +1,6 @@
 //! Command-line arguments.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 pub const USAGE: &str = concat!(
@@ -13,6 +14,7 @@ pub const USAGE: &str = concat!(
        --json      Like --console, one JSON object per poll\n  \
        --once      Poll once and exit (implies --console)\n  \
        --warn-below PERCENT\n              Flag low memory when available RAM falls under PERCENT of\n              the total (0 turns it off, default 15)\n  \
+       --install-icons DIR\n              Write the tray and app icons under DIR/icons/hicolor (DIR is\n              usually ~/.local/share) and exit; install.sh runs this\n  \
        -h, --help  Show this help\n  \
        -V, --version\n              Show the version\n\n\
      SECONDS is the poll interval, 1 to 3600 (default 2)."
@@ -28,6 +30,7 @@ pub enum Mode {
 pub enum Command {
     Help,
     Version,
+    InstallIcons(PathBuf),
     Run {
         mode: Mode,
         interval: Duration,
@@ -46,6 +49,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
             "-V" | "--version" => return Ok(Command::Version),
+            "--install-icons" => {
+                let dir = args.next().ok_or("--install-icons needs a directory")?;
+                if !cfg!(feature = "tray") {
+                    return Err("this build has no tray, so it has no icons".into());
+                }
+                return Ok(Command::InstallIcons(dir.into()));
+            }
             "--console" => console = true,
             "--json" => json = true,
             "--once" => once = true,
@@ -178,5 +188,16 @@ mod tests {
         assert_eq!(p(&["--help", "--nope"]), Ok(Command::Help));
         assert_eq!(p(&["--version"]), Ok(Command::Version));
         assert_eq!(p(&["-V"]), Ok(Command::Version));
+    }
+
+    #[test]
+    fn install_icons_takes_a_directory() {
+        assert!(p(&["--install-icons"]).is_err());
+        let got = p(&["--install-icons", "/tmp/share"]);
+        if cfg!(feature = "tray") {
+            assert_eq!(got, Ok(Command::InstallIcons("/tmp/share".into())));
+        } else {
+            assert!(got.is_err());
+        }
     }
 }

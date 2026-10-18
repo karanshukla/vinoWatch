@@ -12,10 +12,16 @@ set -eu
 repo="karanshukla/vinoWatch"
 bin="$HOME/.local/bin/vinowatch"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+hicolor="$data_dir/icons/hicolor"
 
 if [ "${1:-}" = "--uninstall" ]; then
     systemctl --user disable --now vinowatch.service 2>/dev/null || true
-    rm -f "$bin" "$unit_dir/vinowatch.service"
+    rm -f "$bin" "$unit_dir/vinowatch.service" \
+        "$hicolor/scalable/apps/vinowatch.svg" \
+        "$hicolor/symbolic/apps/vinowatch-symbolic.svg" \
+        "$hicolor/symbolic/apps/vinowatch-active-symbolic.svg" \
+        "$hicolor/symbolic/apps/vinowatch-low-memory-symbolic.svg"
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed vinoWatch."
     exit 0
@@ -84,6 +90,11 @@ fi
 # running tray keeps its old inode until the restart below.
 install -Dm755 "$built" "$bin"
 install -Dm644 "$here/vinowatch.service" "$unit_dir/vinowatch.service"
+# The tray draws its own icons too, so a build without this flag (an older
+# release, or --no-default-features) still shows one.
+if ! "$bin" --install-icons "$data_dir" >/dev/null 2>&1; then
+    echo "This vinowatch can't install its icons; the tray will draw its own."
+fi
 
 if systemctl --user daemon-reload 2>/dev/null; then
     systemctl --user enable vinowatch.service

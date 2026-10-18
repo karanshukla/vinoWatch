@@ -1,10 +1,12 @@
 //! The tray icon: the NPU load in the tooltip, one menu row per process.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, ToolTip, TrayMethods};
 
+use crate::icon::{self, State};
 use crate::sample::{Sampler, Snapshot};
 
 struct WatchTray {
@@ -20,6 +22,31 @@ impl WatchTray {
             if apps == 1 { "" } else { "es" }
         )
     }
+
+    fn state(&self) -> State {
+        if self.snap.low_memory {
+            State::LowMemory
+        } else if self.snap.procs.is_empty() {
+            State::Idle
+        } else {
+            State::Active
+        }
+    }
+}
+
+/// The drawn icons for one state: the fallback when the icon theme has no
+/// `vinowatch-*-symbolic` (it isn't installed, or the host ignores themes).
+fn pixmaps(state: State) -> Vec<ksni::Icon> {
+    static ICONS: OnceLock<[Vec<ksni::Icon>; 3]> = OnceLock::new();
+    let all = ICONS.get_or_init(|| State::ALL.map(icon::tray_icons));
+    let i = State::ALL.iter().position(|&s| s == state).unwrap_or(0);
+    all[i].clone()
+}
+
+/// ksni treats "_" as an access-key marker and hides it; a doubled one is a
+/// literal underscore. Process names like `vino_speak` have them.
+fn menu_text(label: &str) -> String {
+    label.replace('_', "__")
 }
 
 impl ksni::Tray for WatchTray {
@@ -33,17 +60,18 @@ impl ksni::Tray for WatchTray {
         "vinoWatch".into()
     }
 
+    // As vinoWhisper and vinoAuthFace: Plasma files Hardware items in a
+    // different part of the panel.
     fn category(&self) -> Category {
-        Category::Hardware
+        Category::ApplicationStatus
     }
 
-    // Stock theme icons, so there is nothing to install alongside the binary.
     fn icon_name(&self) -> String {
-        if self.snap.low_memory {
-            "dialog-warning".into()
-        } else {
-            "utilities-system-monitor".into()
-        }
+        self.state().icon_name().into()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        pixmaps(self.state())
     }
 
     fn status(&self) -> ksni::Status {
@@ -55,7 +83,11 @@ impl ksni::Tray for WatchTray {
     }
 
     fn attention_icon_name(&self) -> String {
-        "dialog-warning".into()
+        State::LowMemory.icon_name().into()
+    }
+
+    fn attention_icon_pixmap(&self) -> Vec<ksni::Icon> {
+        pixmaps(State::LowMemory)
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -69,7 +101,7 @@ impl ksni::Tray for WatchTray {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let row = |label: String| -> MenuItem<Self> {
             StandardItem {
-                label,
+                label: menu_text(&label),
                 enabled: false,
                 ..Default::default()
             }
@@ -85,9 +117,11 @@ impl ksni::Tray for WatchTray {
         }
         items.extend(self.snap.procs.iter().map(|p| row(p.label())));
         items.push(MenuItem::Separator);
+        items.push(row(format!("vinoWatch {}", env!("CARGO_PKG_VERSION"))));
         items.push(
             StandardItem {
                 label: "Quit".into(),
+                icon_name: "application-exit".into(),
                 activate: Box::new(|_: &mut Self| std::process::exit(0)),
                 ..Default::default()
             }
@@ -120,4 +154,36 @@ pub fn run(interval: Duration, warn_below: u8) -> Result<(), String> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_labels_keep_their_underscores() {
+        assert_eq!(menu_text("vino_speak pid 1"), "vino__speak pid 1");
+        assert_eq!(menu_text("no underscores"), "no underscores");
+    }
+
+    #[test]
+    fn the_icon_follows_the_snapshot() {
+        let mut tray = WatchTray {
+            snap: Snapshot::default(),
+        };
+        assert_eq!(tray.state(), State::Idle);
+        tray.snap.procs.push(crate::sample::Proc {
+            pid: 1,
+            name: "x".into(),
+            project: None,
+            cpu_percent: 0.0,
+            ram_bytes: 0,
+            ram_is_pss: true,
+            npu_open: false,
+        });
+        assert_eq!(tray.state(), State::Active);
+        tray.snap.low_memory = true;
+        assert_eq!(tray.state(), State::LowMemory);
+        assert_eq!(pixmaps(State::LowMemory).len(), 6);
+    }
 }
