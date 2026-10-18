@@ -29,8 +29,12 @@ pub struct Snapshot {
     /// is no `ivpu` device or this is the first poll.
     pub npu_percent: Option<f64>,
     pub procs: Vec<Proc>,
-    /// `(total, available)` bytes of system RAM.
+    /// `(total, available)` bytes: the machine's RAM, or the tightest cgroup
+    /// limit around a listed process when that has less room left.
     pub mem: Option<(u64, u64)>,
+    /// `mem` is a cgroup limit (a container, or a unit with `MemoryMax`), not
+    /// the whole machine.
+    pub cgroup_limited: bool,
     /// Available RAM is under the `--warn-below` share of the total.
     pub low_memory: bool,
 }
@@ -40,6 +44,7 @@ pub struct Sampler {
     meter: Meter,
     proc_root: PathBuf,
     accel_root: PathBuf,
+    cgroup_root: PathBuf,
     warn_below_percent: u8,
 }
 
@@ -56,6 +61,7 @@ impl Sampler {
             meter: Meter::new(),
             proc_root,
             accel_root,
+            cgroup_root: "/sys/fs/cgroup".into(),
             warn_below_percent: 0,
         }
     }
@@ -122,7 +128,22 @@ impl Sampler {
         let npu_percent = self
             .meter
             .update(npu::busy_us(&self.accel_root), Instant::now());
-        let mem = detect::meminfo(&self.proc_root);
+        // The machine's RAM is one candidate; every cgroup limit above a
+        // listed process is another. Whichever has the smallest share left
+        // is what will run out first.
+        let mut mem = detect::meminfo(&self.proc_root);
+        let mut cgroup_limited = false;
+        for p in &procs {
+            let Some(cg) = detect::cgroup_headroom(&self.proc_root, &self.cgroup_root, p.pid)
+            else {
+                continue;
+            };
+            let share = |(t, a): (u64, u64)| a as f64 / t.max(1) as f64;
+            if mem.is_none_or(|m| share(cg) < share(m)) {
+                mem = Some(cg);
+                cgroup_limited = true;
+            }
+        }
         let low_memory = mem.is_some_and(|(total, available)| {
             available.saturating_mul(100) < total.saturating_mul(self.warn_below_percent.into())
         });
@@ -130,6 +151,7 @@ impl Sampler {
             npu_percent,
             procs,
             mem,
+            cgroup_limited,
             low_memory,
         }
     }
@@ -168,8 +190,13 @@ impl Snapshot {
             None => ("null".into(), "null".into()),
         };
         format!(
-            "{{\"npu_percent\":{npu},\"ram_openvino_mib\":{},\"ram_total_mib\":{total},\"ram_available_mib\":{available},\"low_memory\":{},\"processes\":[{}]}}",
+            "{{\"npu_percent\":{npu},\"ram_openvino_mib\":{},\"ram_total_mib\":{total},\"ram_available_mib\":{available},\"ram_limit\":\"{}\",\"low_memory\":{},\"processes\":[{}]}}",
             mib(self.openvino_bytes()),
+            if self.cgroup_limited {
+                "cgroup"
+            } else {
+                "host"
+            },
             self.low_memory,
             procs.join(",")
         )
@@ -181,14 +208,20 @@ impl Snapshot {
         self.procs.iter().map(|p| p.ram_bytes).sum()
     }
 
-    /// `OpenVINO apps hold 2.1 GiB of 7.6 GiB RAM, 4.9 GiB available`
+    /// `OpenVINO apps hold 2.1 GiB of 7.6 GiB RAM, 4.9 GiB available`; inside a
+    /// limit, `... of 1.0 GiB cgroup limit, ...`.
     pub fn ram_label(&self) -> String {
         let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
         let used = gib(self.openvino_bytes());
         match self.mem {
             Some((total, available)) => format!(
-                "OpenVINO apps hold {used:.1} GiB of {:.1} GiB RAM, {:.1} GiB available{}",
+                "OpenVINO apps hold {used:.1} GiB of {:.1} GiB {}, {:.1} GiB available{}",
                 gib(total),
+                if self.cgroup_limited {
+                    "cgroup limit"
+                } else {
+                    "RAM"
+                },
                 gib(available),
                 if self.low_memory { " (low)" } else { "" },
             ),
@@ -258,15 +291,16 @@ mod tests {
                 npu_open: true,
             }],
             mem: Some((8192 * 1024 * 1024, 2048 * 1024 * 1024)),
+            cgroup_limited: false,
             low_memory: false,
         };
         assert_eq!(
             snap.to_json(),
-            r#"{"npu_percent":37.2,"ram_openvino_mib":812,"ram_total_mib":8192,"ram_available_mib":2048,"low_memory":false,"processes":[{"pid":4242,"name":"python3","project":"vinoWhisper","cpu_percent":12.5,"ram_mib":812,"ram_kind":"pss","npu_open":true}]}"#
+            r#"{"npu_percent":37.2,"ram_openvino_mib":812,"ram_total_mib":8192,"ram_available_mib":2048,"ram_limit":"host","low_memory":false,"processes":[{"pid":4242,"name":"python3","project":"vinoWhisper","cpu_percent":12.5,"ram_mib":812,"ram_kind":"pss","npu_open":true}]}"#
         );
         assert_eq!(
             Snapshot::default().to_json(),
-            r#"{"npu_percent":null,"ram_openvino_mib":0,"ram_total_mib":null,"ram_available_mib":null,"low_memory":false,"processes":[]}"#
+            r#"{"npu_percent":null,"ram_openvino_mib":0,"ram_total_mib":null,"ram_available_mib":null,"ram_limit":"host","low_memory":false,"processes":[]}"#
         );
     }
 
@@ -335,6 +369,12 @@ mod tests {
         );
         snap.low_memory = true;
         assert!(snap.ram_label().ends_with("(low)"));
+        snap.cgroup_limited = true;
+        assert!(
+            snap.ram_label()
+                .contains("8.0 GiB cgroup limit, 4.0 GiB available")
+        );
+        snap.cgroup_limited = false;
         snap.mem = None;
         assert_eq!(snap.ram_label(), "OpenVINO apps hold 1.5 GiB RAM");
     }
@@ -363,5 +403,47 @@ mod tests {
         assert!(low_memory_for(149, 15));
         assert!(!low_memory_for(150, 15)); // exactly at the threshold is fine
         assert!(!low_memory_for(0, 0)); // 0 turns the warning off
+    }
+
+    /// A listed process in a 1000 MiB cgroup with 100 MiB left must flag low
+    /// memory even though the machine has plenty.
+    #[test]
+    fn a_cgroup_limit_can_be_the_binding_one() {
+        let root = std::env::temp_dir().join(format!("vinowatch-cglow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pid = std::process::id();
+        let (proc_root, cg) = (root.join("proc"), root.join("cg"));
+        let mib = |n: u64| (n * 1024 * 1024).to_string();
+        std::fs::create_dir_all(proc_root.join(format!("{pid}/fd"))).unwrap();
+        std::fs::write(
+            proc_root.join(format!("{pid}/maps")),
+            "a-b r-xp 0 fd:01 1 /x/libopenvino.so\n",
+        )
+        .unwrap();
+        std::fs::write(proc_root.join(format!("{pid}/cgroup")), "0::/box\n").unwrap();
+        std::fs::write(
+            proc_root.join("meminfo"),
+            "MemTotal: 8000000 kB\nMemAvailable: 6000000 kB\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(cg.join("box")).unwrap();
+        std::fs::write(cg.join("box/memory.max"), mib(1000)).unwrap();
+        std::fs::write(cg.join("box/memory.current"), mib(900)).unwrap();
+
+        let mut sampler = Sampler::with_roots(proc_root.clone(), root.join("no-accel"));
+        sampler.cgroup_root = cg.clone();
+        sampler.warn_below_percent = 15;
+        let snap = sampler.poll();
+        assert!(snap.cgroup_limited);
+        assert!(snap.low_memory);
+        assert_eq!(snap.mem, Some((1000 << 20, 100 << 20)));
+
+        // Plenty of room in the cgroup: the machine's figures stand.
+        std::fs::write(cg.join("box/memory.current"), mib(100)).unwrap();
+        let snap = sampler.poll();
+        assert!(!snap.cgroup_limited);
+        assert_eq!(snap.mem, Some((8_000_000 << 10, 6_000_000 << 10)));
+        assert!(!snap.low_memory);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
