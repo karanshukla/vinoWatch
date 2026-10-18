@@ -99,7 +99,15 @@ impl Sampler {
                     return None;
                 }
                 let by_name = name.to_lowercase().contains("openvino");
-                if !by_name && !detect::uses_openvino(&self.proc_root, pid) {
+                let listed = by_name
+                    || match detect::uses_openvino(&self.proc_root, pid) {
+                        Some(mapped) => mapped,
+                        // Can't look inside: trust the executable's own name,
+                        // not its arguments, so `sudo vinoauthface enroll`
+                        // lists the child and not sudo.
+                        None => detect::classify(&cmdline[..1], None).is_some(),
+                    };
+                if !listed {
                     return None;
                 }
                 let cwd = p.cwd().map(Path::to_string_lossy);

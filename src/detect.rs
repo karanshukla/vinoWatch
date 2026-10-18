@@ -74,12 +74,16 @@ pub fn maps_openvino(maps: &str) -> bool {
     })
 }
 
-/// Whether `pid` has an OpenVINO library mapped. `false` when the maps file
-/// can't be read, which is the case for other users' processes.
-pub fn uses_openvino(proc_root: &Path, pid: u32) -> bool {
-    fs::read_to_string(proc_root.join(format!("{pid}/maps")))
-        .map(|maps| maps_openvino(&maps))
-        .unwrap_or(false)
+/// Whether `pid` has an OpenVINO library mapped. `None` when we may not read
+/// the maps file: other users' processes, and setuid or setgid ones like
+/// `vinoauthface-auth`, which the kernel makes non-dumpable. A process that
+/// has gone is `Some(false)`.
+pub fn uses_openvino(proc_root: &Path, pid: u32) -> Option<bool> {
+    match fs::read_to_string(proc_root.join(format!("{pid}/maps"))) {
+        Ok(maps) => Some(maps_openvino(&maps)),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => None,
+        Err(_) => Some(false),
+    }
 }
 
 /// Whether `pid` has an `/dev/accel/*` node open, i.e. it is talking to the NPU.
@@ -161,6 +165,7 @@ fn kib_field(text: &str, key: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -268,12 +273,19 @@ mod tests {
         fs::create_dir_all(root.join("8/fd")).unwrap();
         std::os::unix::fs::symlink("/dev/null", root.join("8/fd/3")).unwrap();
 
-        assert!(uses_openvino(&root, 7));
+        assert_eq!(uses_openvino(&root, 7), Some(true));
         assert!(holds_npu(&root, 7));
-        assert!(!uses_openvino(&root, 8));
+        assert_eq!(uses_openvino(&root, 8), Some(false));
         assert!(!holds_npu(&root, 8));
-        // A pid with no /proc entry, or one we may not read, is just "no".
-        assert!(!uses_openvino(&root, 9));
+        // A pid with no /proc entry is "no"; one we may not read, "can't tell".
+        assert_eq!(uses_openvino(&root, 9), Some(false));
+        fs::create_dir_all(root.join("10")).unwrap();
+        fs::write(root.join("10/maps"), "").unwrap();
+        fs::set_permissions(root.join("10/maps"), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(root.join("10/maps")).is_err() {
+            // Root reads it anyway.
+            assert_eq!(uses_openvino(&root, 10), None);
+        }
         assert!(!holds_npu(&root, 9));
         fs::remove_dir_all(&root).unwrap();
     }
