@@ -37,15 +37,31 @@ impl ksni::Tray for WatchTray {
         Category::Hardware
     }
 
-    // A stock theme icon, so there is nothing to install alongside the binary.
+    // Stock theme icons, so there is nothing to install alongside the binary.
     fn icon_name(&self) -> String {
-        "utilities-system-monitor".into()
+        if self.snap.low_memory {
+            "dialog-warning".into()
+        } else {
+            "utilities-system-monitor".into()
+        }
+    }
+
+    fn status(&self) -> ksni::Status {
+        if self.snap.low_memory {
+            ksni::Status::NeedsAttention
+        } else {
+            ksni::Status::Active
+        }
+    }
+
+    fn attention_icon_name(&self) -> String {
+        "dialog-warning".into()
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "vinoWatch".into(),
-            description: self.summary(),
+            description: format!("{}\n{}", self.summary(), self.snap.ram_label()),
             ..Default::default()
         }
     }
@@ -59,7 +75,11 @@ impl ksni::Tray for WatchTray {
             }
             .into()
         };
-        let mut items = vec![row(self.summary()), MenuItem::Separator];
+        let mut items = vec![
+            row(self.summary()),
+            row(self.snap.ram_label()),
+            MenuItem::Separator,
+        ];
         if self.snap.procs.is_empty() {
             items.push(row("No OpenVINO processes".into()));
         }
@@ -78,13 +98,13 @@ impl ksni::Tray for WatchTray {
 }
 
 /// Runs until the tray is quit. Errors if no tray host is on the session bus.
-pub fn run(interval: Duration) -> Result<(), String> {
+pub fn run(interval: Duration, warn_below: u8) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        let mut sampler = Sampler::new();
+        let mut sampler = Sampler::new(warn_below);
         sampler.poll();
         let handle = WatchTray {
             snap: Snapshot::default(),

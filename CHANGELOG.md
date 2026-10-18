@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.sh` (checksum-verified download or build from source) and a hardened systemd user unit.
 - CI (fmt, clippy with and without the tray, tests, cargo-deny, shellcheck, unit verify), tagged releases with `SHA256SUMS`, Dependabot.
 
+- Total RAM held by the OpenVINO apps next to system RAM and what is available, in the tray, console and `--json`.
+- Per-process RAM is PSS (shared pages split between their users), so it adds up; resident size is the fallback.
+- Low-memory warning: the tray icon changes when available RAM falls under `--warn-below` percent (default 15, 0 disables). Informational only.
+
 ### Fixed
 
 - Each thread of a multithreaded app was listed as its own process.

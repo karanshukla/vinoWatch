@@ -89,6 +89,30 @@ pub fn holds_npu(proc_root: &Path, pid: u32) -> bool {
         .any(|fd| fs::read_link(fd.path()).is_ok_and(|target| target.starts_with("/dev/accel")))
 }
 
+/// Proportional set size in bytes: resident memory with each shared page
+/// divided among the processes sharing it, so figures from several processes
+/// can be added up. `None` when `smaps_rollup` can't be read.
+pub fn pss_bytes(proc_root: &Path, pid: u32) -> Option<u64> {
+    let text = fs::read_to_string(proc_root.join(format!("{pid}/smaps_rollup"))).ok()?;
+    kib_field(&text, "Pss:").map(|kib| kib * 1024)
+}
+
+/// `(MemTotal, MemAvailable)` in bytes from `/proc/meminfo`.
+pub fn meminfo(proc_root: &Path) -> Option<(u64, u64)> {
+    let text = fs::read_to_string(proc_root.join("meminfo")).ok()?;
+    Some((
+        kib_field(&text, "MemTotal:")? * 1024,
+        kib_field(&text, "MemAvailable:")? * 1024,
+    ))
+}
+
+fn kib_field(text: &str, key: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +213,29 @@ mod tests {
         // A pid with no /proc entry, or one we may not read, is just "no".
         assert!(!uses_openvino(&root, 9));
         assert!(!holds_npu(&root, 9));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reads_pss_and_meminfo() {
+        let root = std::env::temp_dir().join(format!("vinowatch-mem-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("7")).unwrap();
+        fs::write(
+            root.join("7/smaps_rollup"),
+            "00400000-ff Rss: 900 kB\nPss:                 512 kB\nPss_Anon: 100 kB\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("meminfo"),
+            "MemTotal:        8000000 kB\nMemFree: 1 kB\nMemAvailable:   2000000 kB\n",
+        )
+        .unwrap();
+        assert_eq!(pss_bytes(&root, 7), Some(512 * 1024));
+        assert_eq!(pss_bytes(&root, 8), None);
+        assert_eq!(meminfo(&root), Some((8_000_000 * 1024, 2_000_000 * 1024)));
+        fs::remove_file(root.join("meminfo")).unwrap();
+        assert_eq!(meminfo(&root), None);
         fs::remove_dir_all(&root).unwrap();
     }
 }

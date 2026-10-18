@@ -1,6 +1,6 @@
 # Security
 
-vinoWatch runs as you, for the whole session, and only reads: `/proc/<pid>/{maps,cmdline,cwd,fd}`, `/sys/class/accel/*/device/npu_busy_time_us`, and the session D-Bus to show the tray icon. It writes nothing, opens no sockets, and takes no input except its command-line flags. It never runs as root and never needs to.
+vinoWatch runs as you, for the whole session, and only reads: `/proc/<pid>/{maps,cmdline,cwd,fd,smaps_rollup}`, `/proc/meminfo`, `/sys/class/accel/*/device/npu_busy_time_us`, and the session D-Bus to show the tray icon. It writes nothing, opens no sockets, and takes no input except its command-line flags. It never runs as root and never needs to.
 
 ## Reporting
 
