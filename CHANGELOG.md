@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Total RAM held by the OpenVINO apps next to system RAM and what is available, in the tray, console and `--json`.
 - Per-process RAM is PSS (shared pages split between their users), so it adds up; resident size is the fallback.
+- Memory limits from cgroup v2 (containers, units with `MemoryMax`) count: when a listed app is closer to its limit than the machine is to running out, "available" and the warning use the limit.
 - Low-memory warning: the tray icon changes when available RAM falls under `--warn-below` percent (default 15, 0 disables). Informational only.
 
 ### Fixed

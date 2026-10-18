@@ -106,6 +106,49 @@ pub fn meminfo(proc_root: &Path) -> Option<(u64, u64)> {
     ))
 }
 
+/// The tightest memory limit above `pid` in the cgroup v2 tree, as
+/// `(limit, available)` bytes, or `None` if no cgroup around it sets one (or
+/// the tree isn't cgroup v2).
+///
+/// "Used" is `memory.current` minus inactive file cache, like `docker stats`:
+/// the cgroup is charged for page cache too, but that gives way under
+/// pressure, so counting it would raise the alarm too early.
+pub fn cgroup_headroom(proc_root: &Path, cgroup_root: &Path, pid: u32) -> Option<(u64, u64)> {
+    let listing = fs::read_to_string(proc_root.join(format!("{pid}/cgroup"))).ok()?;
+    // cgroup v2 is the single `0::/path` line; v1 has one line per controller.
+    let path = listing.lines().find_map(|l| l.strip_prefix("0::"))?;
+    let mut dir = cgroup_root.join(path.trim_start_matches('/'));
+    let mut tightest: Option<(u64, u64)> = None;
+    loop {
+        if let Some(limit) = read_u64(&dir.join("memory.max")) {
+            let current = read_u64(&dir.join("memory.current")).unwrap_or(0);
+            let cache = fs::read_to_string(dir.join("memory.stat"))
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find_map(|l| l.strip_prefix("inactive_file "))
+                        .and_then(|n| n.trim().parse().ok())
+                })
+                .unwrap_or(0);
+            let available = limit.saturating_sub(current.saturating_sub(cache));
+            // Smallest share of its own limit left is the one that binds.
+            let share = |(l, a): (u64, u64)| a as f64 / l.max(1) as f64;
+            if tightest.is_none_or(|t| share((limit, available)) < share(t)) {
+                tightest = Some((limit, available));
+            }
+        }
+        if dir == cgroup_root || !dir.pop() || !dir.starts_with(cgroup_root) {
+            return tightest;
+        }
+    }
+}
+
+/// A cgroup file holding one number; `max` (no limit) and anything else
+/// unreadable count as absent.
+fn read_u64(path: &Path) -> Option<u64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
 fn kib_field(text: &str, key: &str) -> Option<u64> {
     text.lines()
         .find_map(|l| l.strip_prefix(key))
@@ -213,6 +256,53 @@ mod tests {
         // A pid with no /proc entry, or one we may not read, is just "no".
         assert!(!uses_openvino(&root, 9));
         assert!(!holds_npu(&root, 9));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn finds_the_tightest_cgroup_limit() {
+        let root = std::env::temp_dir().join(format!("vinowatch-cg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (proc_root, cg) = (root.join("proc"), root.join("cg"));
+        let mib = |n: u64| (n * 1024 * 1024).to_string();
+        let write = |dir: &str, max: &str, current: u64, inactive: u64| {
+            let d = cg.join(dir);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("memory.max"), format!("{max}\n")).unwrap();
+            fs::write(d.join("memory.current"), mib(current)).unwrap();
+            fs::write(
+                d.join("memory.stat"),
+                format!("anon 1\ninactive_file {}\n", mib(inactive)),
+            )
+            .unwrap();
+        };
+        // The app's own cgroup is unlimited; its parent has 1000 MiB with 900
+        // used, 300 of which is inactive cache; the root has none.
+        write("a/b", "max", 100, 0);
+        write("a", &mib(1000), 900, 300);
+        fs::create_dir_all(proc_root.join("7")).unwrap();
+        fs::write(proc_root.join("7/cgroup"), "0::/a/b\n").unwrap();
+
+        assert_eq!(
+            cgroup_headroom(&proc_root, &cg, 7),
+            Some((1000 << 20, 400 << 20))
+        );
+
+        // A tighter child wins on the share of its own limit left.
+        write("a/b", &mib(200), 190, 0);
+        assert_eq!(
+            cgroup_headroom(&proc_root, &cg, 7),
+            Some((200 << 20, 10 << 20))
+        );
+
+        // No limit anywhere, a v1 listing, and a missing pid are all "none".
+        fs::remove_dir_all(cg.join("a")).unwrap();
+        fs::create_dir_all(cg.join("a/b")).unwrap();
+        assert_eq!(cgroup_headroom(&proc_root, &cg, 7), None);
+        fs::create_dir_all(proc_root.join("8")).unwrap();
+        fs::write(proc_root.join("8/cgroup"), "4:memory:/a\n").unwrap();
+        assert_eq!(cgroup_headroom(&proc_root, &cg, 8), None);
+        assert_eq!(cgroup_headroom(&proc_root, &cg, 9), None);
         fs::remove_dir_all(&root).unwrap();
     }
 
