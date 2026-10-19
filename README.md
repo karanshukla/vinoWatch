@@ -8,6 +8,7 @@ A small tray daemon that shows what the OpenVINO apps on your machine cost: CPU,
 | [vinoSpeak](https://github.com/karanshukla/vinoSpeak) | `vinospeak` |
 | [vinoPop](https://github.com/karanshukla/vinoPop) | its `vinopop` launcher, or a `main.py` in its checkout |
 | [vinoAuthFace](https://github.com/karanshukla/vinoAuthFace) | `vinoauthface`, `vinoauthface-auth` |
+| [vinoSearch](https://github.com/karanshukla/vinoSearch) | `vinosearch` |
 
 Anything else that loads `libopenvino*` is listed too, just without an app name.
 

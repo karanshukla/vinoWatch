@@ -16,6 +16,7 @@ pub enum Project {
     VinoSpeak,
     VinoPop,
     VinoAuthFace,
+    VinoSearch,
 }
 
 impl fmt::Display for Project {
@@ -25,6 +26,7 @@ impl fmt::Display for Project {
             Self::VinoSpeak => "vinoSpeak",
             Self::VinoPop => "vinoPop",
             Self::VinoAuthFace => "vinoAuthFace",
+            Self::VinoSearch => "vinoSearch",
         })
     }
 }
@@ -43,12 +45,13 @@ pub fn classify(cmdline: &[String], cwd: Option<&str>) -> Option<Project> {
         haystack.push(' ');
         haystack.push_str(&cwd.to_lowercase());
     }
-    const MARKERS: [(&str, Project); 6] = [
+    const MARKERS: [(&str, Project); 7] = [
         ("vinowhisper", Project::VinoWhisper),
         ("vinospeak", Project::VinoSpeak),
         ("vino_speak", Project::VinoSpeak),
         ("vinoauthface", Project::VinoAuthFace),
         ("face-auth", Project::VinoAuthFace),
+        ("vinosearch", Project::VinoSearch),
         ("vinopop", Project::VinoPop),
     ];
     MARKERS
@@ -201,6 +204,10 @@ mod tests {
                 Project::VinoAuthFace,
             ),
             (&["/usr/local/bin/face-auth"][..], Project::VinoAuthFace),
+            (
+                &["/home/u/.cargo/bin/vinosearch", "krunner"][..],
+                Project::VinoSearch,
+            ),
         ];
         for (argv, want) in cases {
             assert_eq!(classify(&args(argv), None), Some(want), "{argv:?}");

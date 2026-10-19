@@ -7,7 +7,7 @@ pub const USAGE: &str = concat!(
     "vinoWatch ",
     env!("CARGO_PKG_VERSION"),
     "\nShows what the OpenVINO apps on this machine (vinoWhisper, vinoSpeak, vinoPop,\n\
-     vinoAuthFace, or anything else that loads libopenvino) cost in CPU, RAM and NPU.\n\n\
+     vinoAuthFace, vinoSearch, or anything else that loads libopenvino) cost in CPU, RAM and NPU.\n\n\
      Usage: vinowatch [OPTIONS] [SECONDS]\n\n\
      Options:\n  \
        --console   Print to the terminal instead of showing a tray icon\n  \
