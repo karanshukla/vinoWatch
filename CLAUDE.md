@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-`vinowatch`: a Rust tray daemon (and console tool) that lists processes using OpenVINO, with their CPU, RAM and, from the `ivpu` driver, system-wide NPU load. It knows the other vino projects (vinoWhisper, vinoSpeak, vinoPop, vinoAuthFace) by command line. User docs are the README; don't duplicate them here.
+`vinowatch`: a Rust tray daemon (and console tool) that lists processes using OpenVINO, with their CPU, RAM and, from the `ivpu` driver, system-wide NPU load. It knows the other vino projects (vinoWhisper, vinoSpeak, vinoPop, vinoAuthFace, vinoSearch) by command line. User docs are the README; don't duplicate them here.
 
 ## Layout
 
