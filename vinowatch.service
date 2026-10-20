@@ -9,6 +9,10 @@ ExecStart=%h/.local/bin/vinowatch
 Restart=on-failure
 RestartSec=2
 # Needs the user's own /proc and the session bus, nothing else: it only reads.
+# No ProtectKernelModules= or ProtectKernelLogs=: in a user unit they make
+# systemd 255 (Ubuntu 24.04) drop capabilities it doesn't have, and the tray
+# never starts (status 218/CAPABILITIES). An unprivileged process can't load
+# modules anyway.
 NoNewPrivileges=yes
 UMask=0077
 LockPersonality=yes
@@ -19,8 +23,6 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
 ProtectControlGroups=yes
 
 [Install]
