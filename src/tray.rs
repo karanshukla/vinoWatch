@@ -1,11 +1,15 @@
 //! The tray icon: the NPU load in the tooltip, one menu row per process.
 
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, ToolTip, TrayMethods};
 
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+
+use crate::driver::{self, Verdict};
 use crate::icon::{self, State};
 use crate::sample::{Sampler, Snapshot};
 
@@ -13,11 +17,144 @@ use crate::sample::{Sampler, Snapshot};
 /// between inferences.
 const NPU_BUSY_PERCENT: f64 = 1.0;
 
+/// The menu's driver actions, run off the tray's thread: the probe takes up
+/// to a minute and the reload waits for `modprobe`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Job {
+    Check,
+    Reset,
+}
+
+/// Where the stuck-driver check is. Nothing runs until it is asked for.
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Driver {
+    #[default]
+    Unchecked,
+    Checking,
+    Resetting,
+    Checked {
+        verdict: Verdict,
+        after_reset: bool,
+    },
+    ResetFailed(String),
+}
+
+impl Driver {
+    fn busy(&self) -> bool {
+        matches!(self, Driver::Checking | Driver::Resetting)
+    }
+
+    fn stuck(&self) -> bool {
+        matches!(
+            self,
+            Driver::Checked {
+                verdict: Verdict::Stuck,
+                ..
+            }
+        )
+    }
+
+    fn label(&self) -> Option<String> {
+        Some(match self {
+            Driver::Unchecked => return None,
+            Driver::Checking => "Checking the NPU driver…".into(),
+            Driver::Resetting => "Reloading the NPU driver…".into(),
+            Driver::Checked {
+                verdict: Verdict::Healthy,
+                after_reset,
+            } => if *after_reset {
+                "NPU driver reloaded and OK"
+            } else {
+                "NPU driver OK"
+            }
+            .into(),
+            Driver::Checked {
+                verdict: Verdict::Stuck,
+                after_reset,
+            } => if *after_reset {
+                "NPU driver still stuck after a reload: reboot"
+            } else {
+                "NPU driver stuck: close the apps holding the NPU, then reset it"
+            }
+            .into(),
+            Driver::Checked {
+                verdict: Verdict::Unknown(why),
+                after_reset,
+            } => format!(
+                "{}NPU check inconclusive: {}",
+                if *after_reset {
+                    "NPU driver reloaded. "
+                } else {
+                    ""
+                },
+                clip(why)
+            ),
+            Driver::ResetFailed(why) => format!("NPU reset failed: {}", clip(why)),
+        })
+    }
+}
+
+/// A Python error can name a long library path; a menu row shouldn't.
+fn clip(text: &str) -> String {
+    const MAX: usize = 100;
+    match text.char_indices().nth(MAX) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.into(),
+    }
+}
+
 struct WatchTray {
     snap: Snapshot,
+    driver: Driver,
+    /// `--probe-python`, else picked from `seen_pythons`.
+    probe_python: Option<PathBuf>,
+    /// Every vino app interpreter seen this session, newest last. Kept after
+    /// the apps exit: a reset needs them closed, and the check after it still
+    /// needs an interpreter with openvino.
+    seen_pythons: Vec<PathBuf>,
+    jobs: Option<UnboundedSender<Job>>,
 }
 
 impl WatchTray {
+    fn new(probe_python: Option<PathBuf>, jobs: Option<UnboundedSender<Job>>) -> Self {
+        WatchTray {
+            snap: Snapshot::default(),
+            driver: Driver::default(),
+            probe_python,
+            seen_pythons: Vec::new(),
+            jobs,
+        }
+    }
+
+    fn set_snapshot(&mut self, snap: Snapshot) {
+        for python in &snap.pythons {
+            self.seen_pythons.retain(|p| p != python);
+            self.seen_pythons.push(python.clone());
+        }
+        self.snap = snap;
+    }
+
+    fn python(&self) -> PathBuf {
+        driver::pick_python(self.probe_python.as_deref(), &self.seen_pythons)
+    }
+
+    /// Starts `job` unless one is already running.
+    fn start(&mut self, job: Job) {
+        let Some(jobs) = &self.jobs else { return };
+        if self.driver.busy() || jobs.send(job).is_err() {
+            return;
+        }
+        self.driver = match job {
+            Job::Check => Driver::Checking,
+            Job::Reset => Driver::Resetting,
+        };
+    }
+
+    /// Processes with `/dev/accel` open: `modprobe -r` refuses while any do.
+    fn holders(&self) -> impl Iterator<Item = &crate::sample::Proc> {
+        self.snap.procs.iter().filter(|p| p.npu_open)
+    }
+
     fn summary(&self) -> String {
         let apps = self.snap.procs.len();
         format!(
@@ -34,12 +171,13 @@ impl WatchTray {
     }
 
     fn state(&self) -> State {
-        if self.snap.low_memory {
+        // The amber icon covers both warnings.
+        if self.snap.low_memory || self.driver.stuck() {
             State::LowMemory
-        } else if self.snap.procs.is_empty() {
-            State::Idle
-        } else {
+        } else if self.in_use() {
             State::Active
+        } else {
+            State::Idle
         }
     }
 }
@@ -87,7 +225,11 @@ impl ksni::Tray for WatchTray {
     // Passive, as vinoWhisper does when idle: the host hides the icon (Plasma
     // files it under the expander, waybar drops it) until a vino app runs.
     fn status(&self) -> ksni::Status {
-        if !self.in_use() {
+        // A stuck driver stays in view after its apps exit: that is when the
+        // reset can run.
+        if self.driver.stuck() {
+            ksni::Status::NeedsAttention
+        } else if !self.in_use() {
             ksni::Status::Passive
         } else if self.snap.low_memory {
             ksni::Status::NeedsAttention
@@ -107,30 +249,35 @@ impl ksni::Tray for WatchTray {
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "vinoWatch".into(),
-            description: format!("{}\n{}", self.summary(), self.snap.ram_label()),
+            description: [
+                Some(self.summary()),
+                Some(self.snap.ram_label()),
+                self.driver.label(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n"),
             ..Default::default()
         }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let row = |label: String| -> MenuItem<Self> {
-            StandardItem {
-                label: menu_text(&label),
-                enabled: false,
-                ..Default::default()
-            }
-            .into()
-        };
-        let mut items = vec![
-            row(self.summary()),
-            row(self.snap.ram_label()),
-            MenuItem::Separator,
-        ];
+        let row = note;
+        let mut items = vec![row(self.summary()), row(self.snap.ram_label())];
+        items.extend(self.driver.label().map(row));
+        items.push(MenuItem::Separator);
         if self.snap.procs.is_empty() {
             items.push(row("No OpenVINO processes".into()));
         }
         items.extend(self.snap.procs.iter().map(|p| row(p.label())));
         items.push(MenuItem::Separator);
+        // Once checked, keep these: a reload whose modprobe failed leaves no
+        // device, and the reset is how to retry.
+        if self.snap.npu_present || self.driver != Driver::Unchecked {
+            items.extend(self.driver_items(driver::reset_installed()));
+            items.push(MenuItem::Separator);
+        }
         items.push(row(format!("vinoWatch {}", env!("CARGO_PKG_VERSION"))));
         items.push(
             StandardItem {
@@ -145,8 +292,85 @@ impl ksni::Tray for WatchTray {
     }
 }
 
+impl WatchTray {
+    /// `reset_installed`: whether `install-npu-reset.sh` has been run.
+    fn driver_items(&self, reset_installed: bool) -> Vec<MenuItem<Self>> {
+        let busy = self.driver.busy();
+        let mut items: Vec<MenuItem<Self>> = vec![
+            StandardItem {
+                label: "Check NPU driver".into(),
+                enabled: !busy,
+                activate: Box::new(|tray: &mut Self| tray.start(Job::Check)),
+                ..Default::default()
+            }
+            .into(),
+        ];
+        if !reset_installed {
+            if self.driver.stuck() {
+                items.push(note("Reset needs: sudo ./install-npu-reset.sh".into()));
+            }
+            return items;
+        }
+        let holders: Vec<String> = self.holders().map(|p| p.label()).collect();
+        items.push(
+            StandardItem {
+                label: "Reset NPU driver".into(),
+                icon_name: "view-refresh".into(),
+                // Nothing is stopped for you; the reset waits for them.
+                enabled: !busy && holders.is_empty(),
+                activate: Box::new(|tray: &mut Self| tray.start(Job::Reset)),
+                ..Default::default()
+            }
+            .into(),
+        );
+        if !holders.is_empty() {
+            items.push(note("Close these first:".into()));
+            items.extend(holders.into_iter().map(note));
+        }
+        items
+    }
+}
+
+/// A row of text: disabled, so clicking it does nothing.
+fn note(label: String) -> MenuItem<WatchTray> {
+    StandardItem {
+        label: menu_text(&label),
+        enabled: false,
+        ..Default::default()
+    }
+    .into()
+}
+
+/// Runs one job and returns where the driver is afterwards.
+async fn run_job(job: Job, python: PathBuf, handle: &ksni::Handle<WatchTray>) -> Driver {
+    let after_reset = match job {
+        Job::Check => false,
+        Job::Reset => {
+            let reset = tokio::task::spawn_blocking(driver::reset)
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            if let Err(why) = reset {
+                return Driver::ResetFailed(why);
+            }
+            handle.update(|t| t.driver = Driver::Checking).await;
+            true
+        }
+    };
+    let verdict = tokio::task::spawn_blocking(move || driver::probe(&python))
+        .await
+        .unwrap_or_else(|e| Verdict::Unknown(e.to_string()));
+    Driver::Checked {
+        verdict,
+        after_reset,
+    }
+}
+
 /// Runs until the tray is quit. Errors if no tray host is on the session bus.
-pub fn run(interval: Duration, warn_below: u8) -> Result<(), String> {
+pub fn run(
+    interval: Duration,
+    warn_below: u8,
+    probe_python: Option<PathBuf>,
+) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -154,17 +378,31 @@ pub fn run(interval: Duration, warn_below: u8) -> Result<(), String> {
     runtime.block_on(async {
         let mut sampler = Sampler::new(warn_below);
         sampler.poll();
-        let handle = WatchTray {
-            snap: Snapshot::default(),
-        }
-        .spawn()
-        .await
-        .map_err(|e| format!("couldn't register the tray icon: {e}"))?;
+        let (jobs, mut queue) = unbounded_channel();
+        let handle = WatchTray::new(probe_python, Some(jobs))
+            .spawn()
+            .await
+            .map_err(|e| format!("couldn't register the tray icon: {e}"))?;
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::time::sleep(interval).await;
-            let snap = sampler.poll();
-            if handle.update(|tray| tray.snap = snap).await.is_none() {
-                return Err("the tray icon went away".into());
+            tokio::select! {
+                _ = ticks.tick() => {
+                    let snap = sampler.poll();
+                    if handle.update(|tray| tray.set_snapshot(snap)).await.is_none() {
+                        return Err("the tray icon went away".into());
+                    }
+                }
+                Some(job) = queue.recv() => {
+                    let Some(python) = handle.update(|tray| tray.python()).await else {
+                        return Err("the tray icon went away".into());
+                    };
+                    let handle = handle.clone();
+                    tokio::spawn(async move {
+                        let driver = run_job(job, python, &handle).await;
+                        handle.update(|tray| tray.driver = driver).await;
+                    });
+                }
             }
         }
     })
@@ -182,9 +420,7 @@ mod tests {
 
     #[test]
     fn the_icon_follows_the_snapshot() {
-        let mut tray = WatchTray {
-            snap: Snapshot::default(),
-        };
+        let mut tray = WatchTray::new(None, None);
         assert_eq!(tray.state(), State::Idle);
         tray.snap.procs.push(crate::sample::Proc {
             pid: 1,
@@ -198,15 +434,20 @@ mod tests {
         assert_eq!(tray.state(), State::Active);
         tray.snap.low_memory = true;
         assert_eq!(tray.state(), State::LowMemory);
+        // NPU load from a process we couldn't list still counts.
+        tray.snap.low_memory = false;
+        tray.snap.procs.clear();
+        tray.snap.npu_percent = Some(0.4);
+        assert_eq!(tray.state(), State::Idle);
+        tray.snap.npu_percent = Some(30.0);
+        assert_eq!(tray.state(), State::Active);
         assert_eq!(pixmaps(State::LowMemory).len(), 6);
     }
 
     #[test]
     fn the_icon_hides_while_nothing_uses_openvino() {
         use ksni::Tray;
-        let mut tray = WatchTray {
-            snap: Snapshot::default(),
-        };
+        let mut tray = WatchTray::new(None, None);
         assert_eq!(tray.status(), ksni::Status::Passive);
         // Low memory on its own is not about the vino apps.
         tray.snap.low_memory = true;
@@ -217,5 +458,131 @@ mod tests {
         assert_eq!(tray.status(), ksni::Status::NeedsAttention);
         tray.snap.low_memory = false;
         assert_eq!(tray.status(), ksni::Status::Active);
+    }
+
+    fn labels(tray: &WatchTray) -> Vec<String> {
+        use ksni::Tray;
+        texts(tray.menu())
+    }
+
+    fn texts(items: Vec<MenuItem<WatchTray>>) -> Vec<String> {
+        items
+            .into_iter()
+            .filter_map(|item| match item {
+                MenuItem::Standard(item) => Some(item.label),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_driver_check_shows_with_an_npu() {
+        let mut tray = WatchTray::new(None, None);
+        assert!(!labels(&tray).contains(&"Check NPU driver".to_string()));
+        tray.snap.npu_present = true;
+        assert!(labels(&tray).contains(&"Check NPU driver".to_string()));
+        // A reload that leaves no device must still offer a retry.
+        tray.snap.npu_present = false;
+        tray.driver = Driver::ResetFailed("modprobe failed".into());
+        assert!(labels(&tray).contains(&"Check NPU driver".to_string()));
+        assert!(labels(&tray).contains(&"NPU reset failed: modprobe failed".to_string()));
+    }
+
+    #[test]
+    fn the_reset_waits_for_the_npu_holders() {
+        let mut tray = WatchTray::new(None, None);
+        tray.driver = Driver::Checked {
+            verdict: Verdict::Stuck,
+            after_reset: false,
+        };
+        assert_eq!(
+            texts(tray.driver_items(false)),
+            [
+                "Check NPU driver",
+                "Reset needs: sudo ./install-npu-reset.sh"
+            ]
+        );
+        let enabled = |tray: &WatchTray| {
+            tray.driver_items(true)
+                .into_iter()
+                .find_map(|item| match item {
+                    MenuItem::Standard(i) if i.label == "Reset NPU driver" => Some(i.enabled),
+                    _ => None,
+                })
+        };
+        assert_eq!(enabled(&tray), Some(true));
+        tray.snap.procs.push(crate::sample::Proc {
+            pid: 7,
+            name: "vino_speak".into(),
+            project: None,
+            cpu_percent: 0.0,
+            ram_bytes: 0,
+            ram_is_pss: true,
+            npu_open: true,
+        });
+        assert_eq!(enabled(&tray), Some(false));
+        let items = texts(tray.driver_items(true));
+        assert_eq!(items[2], "Close these first:");
+        assert!(items[3].starts_with("vino__speak pid 7"), "{}", items[3]);
+        tray.driver = Driver::Resetting;
+        assert_eq!(enabled(&tray), Some(false));
+    }
+
+    #[test]
+    fn long_errors_are_clipped() {
+        let tray = WatchTray {
+            driver: Driver::Checked {
+                verdict: Verdict::Unknown("x".repeat(500)),
+                after_reset: true,
+            },
+            ..WatchTray::new(None, None)
+        };
+        let label = tray.driver.label().unwrap();
+        assert!(label.starts_with("NPU driver reloaded. NPU check inconclusive: xxx"));
+        assert!(label.ends_with("x…"));
+        assert!(label.chars().count() < 200);
+    }
+
+    #[test]
+    fn a_stuck_driver_turns_amber_and_stays_in_view() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        tray.driver = Driver::Checked {
+            verdict: Verdict::Stuck,
+            after_reset: false,
+        };
+        assert_eq!(tray.state(), State::LowMemory);
+        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
+        assert!(tray.tool_tip().description.contains("NPU driver stuck"));
+        tray.driver = Driver::Checked {
+            verdict: Verdict::Healthy,
+            after_reset: true,
+        };
+        assert_eq!(tray.state(), State::Idle);
+        assert_eq!(tray.status(), ksni::Status::Passive);
+    }
+
+    #[test]
+    fn one_driver_job_at_a_time() {
+        let (jobs, mut queue) = unbounded_channel();
+        let mut tray = WatchTray::new(None, Some(jobs));
+        tray.start(Job::Check);
+        tray.start(Job::Reset);
+        assert_eq!(tray.driver, Driver::Checking);
+        assert_eq!(queue.try_recv(), Ok(Job::Check));
+        assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn interpreters_are_remembered_after_their_apps_exit() {
+        let mut tray = WatchTray::new(None, None);
+        tray.set_snapshot(Snapshot {
+            pythons: vec!["/bin/sh".into()],
+            ..Default::default()
+        });
+        tray.set_snapshot(Snapshot::default());
+        assert_eq!(tray.python(), PathBuf::from("/bin/sh"));
+        let tray = WatchTray::new(Some("/opt/py".into()), None);
+        assert_eq!(tray.python(), PathBuf::from("/opt/py"));
     }
 }

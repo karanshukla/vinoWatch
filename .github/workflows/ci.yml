@@ -59,7 +59,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: shellcheck install.sh
+      - run: shellcheck install.sh install-npu-reset.sh
       # verify wants ExecStart to exist, so stand in for the installed binary.
       - run: install -D /bin/true ~/.local/bin/vinowatch
       - run: systemd-analyze --user verify vinowatch.service
+      - run: systemd-analyze verify ./vino-npu-reset.service

@@ -20,7 +20,7 @@ tray = ["dep:ksni", "dep:tokio"]
 [dependencies]
 ksni = { version = "0.3.6", optional = true }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
-tokio = { version = "1.53.1", optional = true, features = ["rt", "macros", "time"] }
+tokio = { version = "1.53.1", optional = true, features = ["rt", "macros", "time", "sync"] }
 
 [profile.release]
 lto = true

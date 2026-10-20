@@ -46,7 +46,8 @@ jobs:
             cargo build --release --locked --target "$arch-unknown-linux-musl"
             dir="dist/vinowatch"
             rm -rf "$dir" && mkdir -p "$dir"
-            cp "target/$arch-unknown-linux-musl/release/vinowatch" vinowatch.service install.sh "$dir"
+            cp "target/$arch-unknown-linux-musl/release/vinowatch" vinowatch.service install.sh \
+              install-npu-reset.sh vino-npu-reset.service vino-npu-reset.rules "$dir"
             tar -czf "dist/vinowatch-$arch-linux.tar.gz" -C dist vinowatch
           done
           # install.sh checks the tarball it downloads against this.

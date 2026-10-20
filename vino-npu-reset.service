@@ -1,0 +1,12 @@
+[Unit]
+Description=Reload the Intel NPU driver (intel_vpu) to clear a stuck state
+Documentation=https://github.com/karanshukla/vinoWatch
+
+# Started by vinoWatch's "Reset NPU driver". The polkit rule
+# vino-npu-reset.rules lets the active local user start this unit and no other.
+[Service]
+Type=oneshot
+# -r refuses while anything holds /dev/accel, so a running app never has the
+# NPU pulled out from under it; the unit fails and says so instead.
+ExecStart=/usr/sbin/modprobe -r intel_vpu
+ExecStart=/usr/sbin/modprobe intel_vpu
