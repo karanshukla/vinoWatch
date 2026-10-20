@@ -36,10 +36,10 @@ impl WatchTray {
     fn state(&self) -> State {
         if self.snap.low_memory {
             State::LowMemory
-        } else if self.snap.procs.is_empty() {
-            State::Idle
-        } else {
+        } else if self.in_use() {
             State::Active
+        } else {
+            State::Idle
         }
     }
 }
@@ -198,6 +198,13 @@ mod tests {
         assert_eq!(tray.state(), State::Active);
         tray.snap.low_memory = true;
         assert_eq!(tray.state(), State::LowMemory);
+        // NPU load from a process we couldn't list still counts.
+        tray.snap.low_memory = false;
+        tray.snap.procs.clear();
+        tray.snap.npu_percent = Some(0.4);
+        assert_eq!(tray.state(), State::Idle);
+        tray.snap.npu_percent = Some(30.0);
+        assert_eq!(tray.state(), State::Active);
         assert_eq!(pixmaps(State::LowMemory).len(), 6);
     }
 

@@ -156,10 +156,13 @@ fn opacity(Rgba(_, _, _, a): Rgba) -> String {
     format!("{:.2}", f32::from(a) / 255.0)
 }
 
-/// The installed app icon (`vinowatch.svg`): the active state.
+/// The installed app icon (`vinowatch.svg`): the active state, with the
+/// viewBox cropped to a 2-unit margin. The 64-unit grid's 4-unit margin left
+/// the tile visibly smaller than other apps' icons in a task manager; the tray
+/// pixmaps keep it, since they're drawn at their own size.
 pub fn app_svg() -> String {
     let mut svg =
-        String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\">\n");
+        String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"2 2 60 60\">\n");
     let mut line = |element: String| {
         svg.push_str("  ");
         svg.push_str(&element);
