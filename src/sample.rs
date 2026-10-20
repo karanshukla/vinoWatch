@@ -6,6 +6,7 @@ use std::time::Instant;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::detect::{self, Project};
+use crate::driver;
 use crate::npu::{self, Meter};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +38,11 @@ pub struct Snapshot {
     pub cgroup_limited: bool,
     /// Available RAM is under the `--warn-below` share of the total.
     pub low_memory: bool,
+    /// An `ivpu` device exposes its busy counter, even on the first poll.
+    pub npu_present: bool,
+    /// The venv interpreters of the Python OpenVINO apps listed this poll,
+    /// for the stuck-driver probe (see `driver::python_of`).
+    pub pythons: Vec<PathBuf>,
 }
 
 pub struct Sampler {
@@ -76,6 +82,7 @@ impl Sampler {
             .with_cwd(UpdateKind::OnlyIfNotSet);
         self.sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+        let mut pythons = Vec::new();
 
         let mut procs: Vec<Proc> = self
             .sys
@@ -110,6 +117,7 @@ impl Sampler {
                 if !listed {
                     return None;
                 }
+                pythons.extend(driver::python_of(&cmdline));
                 let cwd = p.cwd().map(Path::to_string_lossy);
                 let pss = detect::pss_bytes(&self.proc_root, pid);
                 Some(Proc {
@@ -133,9 +141,11 @@ impl Sampler {
                 .then(a.pid.cmp(&b.pid))
         });
 
-        let npu_percent = self
-            .meter
-            .update(npu::busy_us(&self.accel_root), Instant::now());
+        let busy = npu::busy_us(&self.accel_root);
+        let npu_present = busy.is_some();
+        let npu_percent = self.meter.update(busy, Instant::now());
+        pythons.sort();
+        pythons.dedup();
         // The machine's RAM is one candidate; every cgroup limit above a
         // listed process is another. Whichever has the smallest share left
         // is what will run out first.
@@ -161,6 +171,8 @@ impl Sampler {
             mem,
             cgroup_limited,
             low_memory,
+            npu_present,
+            pythons,
         }
     }
 }
@@ -301,6 +313,7 @@ mod tests {
             mem: Some((8192 * 1024 * 1024, 2048 * 1024 * 1024)),
             cgroup_limited: false,
             low_memory: false,
+            ..Default::default()
         };
         assert_eq!(
             snap.to_json(),
@@ -353,6 +366,9 @@ mod tests {
         assert!(!me.npu_open);
         assert_eq!(snap.procs.len(), 1);
         assert_eq!(snap.npu_percent, None);
+        assert!(!snap.npu_present);
+        // The test binary is no Python, so it offers no probe interpreter.
+        assert!(snap.pythons.is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -14,6 +14,21 @@ Anything else that loads `libopenvino*` is listed too, just without an app name.
 
 Hover the tray icon for the NPU load, a process count and how much RAM the OpenVINO apps hold against what the machine has free; click it for one row per process. The icon is three meters in the vino apps' style: green while an OpenVINO app runs or the NPU is busy, and amber if available RAM drops under 15% of the total (`--warn-below PERCENT` changes that, `0` turns it off). With nothing to watch it goes passive, as vinoWhisper's does, so Plasma tucks it under the expander and Waybar hides it. It only changes the icon and tooltip: no popups, and nothing is ever stopped for you. The tray needs a StatusNotifierItem host: KDE Plasma and Waybar have one, GNOME needs the AppIndicator extension.
 
+## Stuck NPU driver
+
+After heavy NPU use the `intel_vpu` driver can get stuck: any process with two OpenVINO Cores touching the NPU segfaults in `libze_loader`, so vinoPop crashes on every AI action and vinoAuthFace on every scan. Reloading the driver clears it without a reboot.
+
+With an NPU present the tray menu has **Check NPU driver**. It runs a ~0.3 s probe (vinoPop's: a toy model on the NPU, a second Core, the model again; a segfault means stuck) on demand, never on a timer. A stuck driver turns the icon amber and keeps it in view. The probe needs a Python that can import openvino: `--probe-python PATH`, else the venv interpreter of a vino app vinoWatch has seen running, else `python3`. `vinowatch --check-npu` runs the same probe from a terminal (exit 0 OK, 1 stuck, 3 couldn't tell).
+
+**Reset NPU driver** reloads it (`modprobe -r intel_vpu && modprobe intel_vpu`) through a root oneshot unit, and checks again afterwards. That needs a one-time root step, which `install.sh` doesn't do:
+
+```sh
+sudo ./install-npu-reset.sh              # from a checkout or an unpacked release
+sudo ./install-npu-reset.sh --uninstall
+```
+
+It installs `vino-npu-reset.service` and a polkit rule that lets the active local user start that unit, and nothing else, without a password. `modprobe -r` refuses while anything has `/dev/accel` open, so the item lists the apps holding the NPU and stays disabled until you close them. Nothing is stopped for you. Holders that belong to other users aren't visible; then the reset fails and says so.
+
 ## Install
 
 ```sh
@@ -54,7 +69,7 @@ Build without the tray (and its D-Bus dependency) with `cargo build --release --
 - Other users' processes can't be inspected (their `maps` files are unreadable), so they aren't listed.
 - A process that lives for less than one poll interval, like a single `sudo` face check, can be missed. Lower the interval, or use `--json` with a short one.
 - No GPU or energy numbers yet. The NPU counter is only read from the `ivpu` driver.
-- The NPU path is written against the driver's documented sysfs file and unit-tested with a fake one; it hasn't been run against a real NPU yet.
+- The NPU path is written against the driver's documented sysfs file and unit-tested with a fake one; it hasn't been run against a real NPU yet. The same goes for the stuck-driver probe and reset: the polkit rule and the reload were checked on a machine without an NPU, not on a stuck driver.
 
 ## Development
 

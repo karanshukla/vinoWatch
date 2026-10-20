@@ -8,7 +8,10 @@ After=graphical-session.target
 ExecStart=%h/.local/bin/vinowatch
 Restart=on-failure
 RestartSec=2
-# Needs the user's own /proc and the session bus, nothing else: it only reads.
+# Needs the user's own /proc and the session bus. The only things it runs are
+# the stuck-driver probe (a Python with openvino) and `systemctl start
+# vino-npu-reset.service`, both from the tray menu; Unix sockets cover the
+# system bus that takes.
 # No ProtectKernelModules= or ProtectKernelLogs=: in a user unit they make
 # systemd 255 (Ubuntu 24.04) drop capabilities it doesn't have, and the tray
 # never starts (status 218/CAPABILITIES). An unprivileged process can't load

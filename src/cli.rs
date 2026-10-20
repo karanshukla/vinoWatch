@@ -14,6 +14,8 @@ pub const USAGE: &str = concat!(
        --json      Like --console, one JSON object per poll\n  \
        --once      Poll once and exit (implies --console)\n  \
        --warn-below PERCENT\n              Flag low memory when available RAM falls under PERCENT of\n              the total (0 turns it off, default 15)\n  \
+       --check-npu Check whether the intel_vpu driver is stuck, then exit: 0 OK,\n              1 stuck, 3 couldn't tell\n  \
+       --probe-python PATH\n              The Python (with openvino) that runs that check; by default\n              a running vino app's, else python3\n  \
        --install-icons DIR\n              Write the tray and app icons under DIR/icons/hicolor (DIR is\n              usually ~/.local/share) and exit; install.sh runs this\n  \
        -h, --help  Show this help\n  \
        -V, --version\n              Show the version\n\n\
@@ -31,17 +33,23 @@ pub enum Command {
     Help,
     Version,
     InstallIcons(PathBuf),
+    CheckNpu {
+        python: Option<PathBuf>,
+    },
     Run {
         mode: Mode,
         interval: Duration,
         warn_below: u8,
+        /// For the tray's "Check NPU driver".
+        probe_python: Option<PathBuf>,
     },
 }
 
 pub const DEFAULT_WARN_BELOW: u8 = 15;
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
-    let (mut console, mut json, mut once) = (false, false, false);
+    let (mut console, mut json, mut once, mut check_npu) = (false, false, false, false);
+    let mut probe_python = None;
     let mut interval = None;
     let mut warn_below = DEFAULT_WARN_BELOW;
     let mut args = args.into_iter();
@@ -59,6 +67,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             "--console" => console = true,
             "--json" => json = true,
             "--once" => once = true,
+            "--check-npu" => check_npu = true,
+            "--probe-python" => {
+                let path = args.next().ok_or("--probe-python needs a path")?;
+                probe_python = Some(PathBuf::from(path));
+            }
             "--warn-below" => {
                 let value = args.next().ok_or("--warn-below needs a percentage")?;
                 warn_below = match value.parse::<u8>() {
@@ -82,6 +95,11 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
             }
         }
     }
+    if check_npu {
+        return Ok(Command::CheckNpu {
+            python: probe_python,
+        });
+    }
     let mode = if console || json || once || !cfg!(feature = "tray") {
         Mode::Console { json, once }
     } else {
@@ -91,6 +109,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
         mode,
         interval: interval.unwrap_or(Duration::from_secs(2)),
         warn_below,
+        probe_python,
     })
 }
 
@@ -121,6 +140,7 @@ mod tests {
                 },
                 interval: Duration::from_secs(5),
                 warn_below: 15,
+                probe_python: None,
             })
         );
         assert_eq!(
@@ -132,6 +152,7 @@ mod tests {
                 },
                 interval: Duration::from_secs(2),
                 warn_below: 15,
+                probe_python: None,
             })
         );
     }
@@ -188,6 +209,22 @@ mod tests {
         assert_eq!(p(&["--help", "--nope"]), Ok(Command::Help));
         assert_eq!(p(&["--version"]), Ok(Command::Version));
         assert_eq!(p(&["-V"]), Ok(Command::Version));
+    }
+
+    #[test]
+    fn check_npu_takes_the_probe_python() {
+        assert_eq!(p(&["--check-npu"]), Ok(Command::CheckNpu { python: None }));
+        assert_eq!(
+            p(&["--probe-python", "/v/bin/python3", "--check-npu"]),
+            Ok(Command::CheckNpu {
+                python: Some("/v/bin/python3".into())
+            })
+        );
+        assert!(p(&["--probe-python"]).is_err());
+        let Ok(Command::Run { probe_python, .. }) = p(&["--probe-python", "/v/bin/python3"]) else {
+            panic!()
+        };
+        assert_eq!(probe_python, Some("/v/bin/python3".into()));
     }
 
     #[test]

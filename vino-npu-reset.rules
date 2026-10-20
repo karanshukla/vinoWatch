@@ -1,0 +1,10 @@
+// Lets the active local user start vino-npu-reset.service, which reloads the
+// intel_vpu driver, without a password. Only that unit, and only "start".
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "vino-npu-reset.service" &&
+        action.lookup("verb") == "start" &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});
