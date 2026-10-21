@@ -639,6 +639,7 @@ dependencies = [
  "ksni",
  "sysinfo",
  "tokio",
+ "zbus",
 ]
 
 [[package]]

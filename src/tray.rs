@@ -1,5 +1,6 @@
 //! The tray icon: the NPU load in the tooltip, one menu row per process.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -365,6 +366,36 @@ async fn run_job(job: Job, python: PathBuf, handle: &ksni::Handle<WatchTray>) ->
     }
 }
 
+/// The menu closes on click, so without this a check that ends "OK" looks
+/// like it did nothing. Best effort: no notification server, no popup.
+async fn notify(driver: &Driver) {
+    let Some(summary) = driver.label() else {
+        return;
+    };
+    let Ok(bus) = zbus::Connection::session().await else {
+        return;
+    };
+    let hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
+    let _ = bus
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &(
+                "vinoWatch",
+                0u32,
+                "vinowatch",
+                summary,
+                "",
+                Vec::<&str>::new(),
+                hints,
+                -1i32,
+            ),
+        )
+        .await;
+}
+
 /// Runs until the tray is quit. Errors if no tray host is on the session bus.
 pub fn run(
     interval: Duration,
@@ -400,6 +431,7 @@ pub fn run(
                     let handle = handle.clone();
                     tokio::spawn(async move {
                         let driver = run_job(job, python, &handle).await;
+                        notify(&driver).await;
                         handle.update(|tray| tray.driver = driver).await;
                     });
                 }

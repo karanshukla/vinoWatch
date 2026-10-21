@@ -15,12 +15,15 @@ exclude = [".github/"]
 default = ["tray"]
 # The system tray front-end (StatusNotifierItem over D-Bus). Without it the
 # binary is console-only and has no D-Bus dependency.
-tray = ["dep:ksni", "dep:tokio"]
+tray = ["dep:ksni", "dep:tokio", "dep:zbus"]
 
 [dependencies]
 ksni = { version = "0.3.6", optional = true }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 tokio = { version = "1.53.1", optional = true, features = ["rt", "macros", "time", "sync"] }
+# Already in the tree through ksni, with the same features; used for the
+# desktop notification after a driver check.
+zbus = { version = "5", optional = true, default-features = false, features = ["tokio"] }
 
 [profile.release]
 lto = true

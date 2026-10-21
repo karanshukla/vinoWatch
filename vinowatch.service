@@ -16,6 +16,10 @@ RestartSec=2
 # systemd 255 (Ubuntu 24.04) drop capabilities it doesn't have, and the tray
 # never starts (status 218/CAPABILITIES). An unprivileged process can't load
 # modules anyway.
+# No ProtectSystem=, ProtectHome= or ProtectControlGroups= either: a user
+# manager can only set up their mount namespace inside a user namespace, and
+# from there another process's /proc/<pid>/maps, smaps_rollup and fd/ are
+# permission denied, so detection, PSS and "NPU open" all silently degrade.
 NoNewPrivileges=yes
 UMask=0077
 LockPersonality=yes
@@ -24,9 +28,6 @@ RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ProtectControlGroups=yes
 
 [Install]
 WantedBy=graphical-session.target
