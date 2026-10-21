@@ -95,6 +95,10 @@ install -Dm644 "$here/vinowatch.service" "$unit_dir/vinowatch.service"
 if ! "$bin" --install-icons "$data_dir" >/dev/null 2>&1; then
     echo "This vinowatch can't install its icons; the tray will draw its own."
 fi
+# Plasma keeps icons it has looked up in memory, so an updated icon wouldn't
+# show until the next login. This is the signal an icon theme change sends.
+dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 \
+    2>/dev/null || true
 
 if systemctl --user daemon-reload 2>/dev/null; then
     systemctl --user enable vinowatch.service

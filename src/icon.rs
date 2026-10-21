@@ -131,19 +131,23 @@ const SMALL: Grid = Grid {
     size: 16.0,
 };
 
-/// 16-unit design for the symbolic tray icon, which has no tile: the meters
-/// sit on a 12-unit square with a 2-unit margin, the same footprint as the
-/// other icons in the tray.
+/// The symbolic icon's outline: vinoWhisper's and vinoPop's tray frame, path
+/// for path, so the vino icons sit together in the panel.
+const FRAME: &str = "M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z\
+                     M3 3h10a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1z";
+
+/// 16-unit design for the symbolic tray icon: inside `FRAME`, three 1-unit
+/// meters in vinoWhisper's line style, each level a gap away from its track.
 const SYMBOLIC: Grid = Grid {
     tile: Shape::new(0.0, 0.0, 16.0, 16.0, 0.0),
     edge: 0.0,
     marks: &[
-        (Shape::new(9.0, 3.0, 5.0, 2.0, 0.0), Part::Track),
-        (Shape::new(2.0, 3.0, 7.0, 2.0, 0.0), Part::Level),
-        (Shape::new(12.0, 7.0, 2.0, 2.0, 0.0), Part::Track),
-        (Shape::new(2.0, 7.0, 10.0, 2.0, 0.0), Part::Level),
-        (Shape::new(7.0, 11.0, 7.0, 2.0, 0.0), Part::Track),
-        (Shape::new(2.0, 11.0, 5.0, 2.0, 0.0), Part::Level),
+        (Shape::new(4.0, 5.0, 4.0, 1.0, 0.0), Part::Level),
+        (Shape::new(9.0, 5.0, 3.0, 1.0, 0.0), Part::Track),
+        (Shape::new(4.0, 8.0, 6.0, 1.0, 0.0), Part::Level),
+        (Shape::new(11.0, 8.0, 1.0, 1.0, 0.0), Part::Track),
+        (Shape::new(4.0, 11.0, 2.0, 1.0, 0.0), Part::Level),
+        (Shape::new(7.0, 11.0, 5.0, 1.0, 0.0), Part::Track),
     ],
     size: 16.0,
 };
@@ -222,9 +226,10 @@ pub fn symbolic_svg(state: State) -> String {
     } else {
         TRAY_GREEN
     });
-    let mut svg = String::from(
+    let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\n  \
-         <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text { color: #232629; }</style>\n",
+         <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text {{ color: #232629; }}</style>\n  \
+         <path class=\"ColorScheme-Text\" style=\"fill:currentColor\" fill-rule=\"evenodd\" d=\"{FRAME}\"/>\n",
     );
     for (path, style) in [
         (text, "fill:currentColor".to_string()),
@@ -297,12 +302,71 @@ fn tray_icon(state: State, size: u32) -> ksni::Icon {
 
 fn draw(canvas: &mut Canvas, grid: &Grid, state: State, size: f32) {
     let unit = size / grid.size;
-    let tile = grid.tile.rect(unit);
-    canvas.fill_rounded(tile, grid.tile.r * unit, TILE);
-    canvas.stroke_rounded(tile, grid.tile.r * unit, grid.edge * unit, EDGE);
+    draw_tile(canvas, grid, unit);
     for &(shape, part) in grid.marks {
         canvas.fill_rounded(shape.rect(unit), shape.r * unit, paint(state, part));
     }
+}
+
+fn draw_tile(canvas: &mut Canvas, grid: &Grid, unit: f32) {
+    let tile = grid.tile.rect(unit);
+    canvas.fill_rounded(tile, grid.tile.r * unit, TILE);
+    canvas.stroke_rounded(tile, grid.tile.r * unit, grid.edge * unit, EDGE);
+}
+
+/// Menu row icons are drawn at this size and scaled down by the host: a 16 px
+/// menu icon is 24 px at 150%, 32 px at 200%.
+const ROW_ICON: u32 = 48;
+
+/// The one meter of a single-level row icon: the three meters' span, twice as
+/// thick.
+const WIDE_METER: Shape = Shape::new(14.0, 27.0, 36.0, 10.0, 5.0);
+
+/// The meters of a row icon on the 64-unit grid: each track, and the level
+/// over it when there is one. `levels` are 0 to 1, one meter or three.
+fn meters(levels: &[f32]) -> Vec<(Shape, Option<Shape>)> {
+    let tracks: Vec<Shape> = if levels.len() == 1 {
+        vec![WIDE_METER]
+    } else {
+        LARGE
+            .marks
+            .iter()
+            .filter(|(_, part)| *part == Part::Track)
+            .map(|(shape, _)| *shape)
+            .collect()
+    };
+    tracks
+        .into_iter()
+        .zip(levels)
+        .map(|(track, &level)| {
+            // In 2-unit steps, so a level that barely moves doesn't redraw the
+            // menu; anything above zero shows at least as a dot.
+            let steps = track.w / 2.0;
+            let filled = (level.clamp(0.0, 1.0) * steps).round() / steps * track.w;
+            let level = (level > 0.0).then(|| Shape {
+                w: filled.max(track.h),
+                ..track
+            });
+            (track, level)
+        })
+        .collect()
+}
+
+/// A menu row's icon, as PNG: the tile with one meter per level, filled in
+/// `state`'s colour, so a row shows its own numbers at a glance.
+pub fn meter_png(state: State, levels: &[f32]) -> Vec<u8> {
+    let mut pixels = vec![0u8; (ROW_ICON * ROW_ICON * 4) as usize];
+    let mut canvas = Canvas::new(&mut pixels, ROW_ICON, ROW_ICON);
+    let unit = ROW_ICON as f32 / LARGE.size;
+    draw_tile(&mut canvas, &LARGE, unit);
+    for (track, level) in meters(levels) {
+        canvas.fill_rounded(track.rect(unit), track.r * unit, TRACK);
+        if let Some(level) = level {
+            let colour = paint(state, Part::Level);
+            canvas.fill_rounded(level.rect(unit), level.r * unit, colour);
+        }
+    }
+    crate::png::encode(ROW_ICON, ROW_ICON, &canvas.to_rgba())
 }
 
 #[cfg(test)]
@@ -327,6 +391,36 @@ mod tests {
         }
         let [a, b, c] = State::ALL.map(symbolic_svg);
         assert!(a != b && b != c && a != c, "symbolic states collide");
+    }
+
+    #[test]
+    fn row_meters_follow_their_levels() {
+        let levels = |input: &[f32]| -> Vec<Option<f32>> {
+            meters(input)
+                .into_iter()
+                .map(|(_, l)| l.map(|l| l.w))
+                .collect()
+        };
+        assert_eq!(levels(&[0.0, 1.0, 0.5]), [None, Some(36.0), Some(18.0)]);
+        // Over-full is full; a sliver is a round dot, not nothing.
+        assert_eq!(levels(&[2.0, 0.001, 0.0]), [Some(36.0), Some(6.0), None]);
+        assert_eq!(levels(&[0.25]), [Some(10.0)]);
+        // A level that barely moves draws the same icon.
+        assert_eq!(
+            meter_png(State::Active, &[0.5]),
+            meter_png(State::Active, &[0.51])
+        );
+        assert_ne!(
+            meter_png(State::Active, &[0.5]),
+            meter_png(State::Idle, &[0.5])
+        );
+    }
+
+    #[test]
+    fn the_wide_meter_is_centred_in_the_three() {
+        let (top, bottom) = (LARGE.marks[0].0.y, LARGE.marks[5].0.y + LARGE.marks[5].0.h);
+        assert_eq!(WIDE_METER.y + WIDE_METER.h / 2.0, (top + bottom) / 2.0);
+        assert_eq!(WIDE_METER.r * 2.0, WIDE_METER.h);
     }
 
     #[test]
@@ -357,9 +451,27 @@ mod tests {
         }
     }
 
+    /// The inside of `FRAME`.
+    const FRAME_INNER: Shape = Shape::new(2.0, 3.0, 12.0, 10.0, 1.0);
+
+    #[test]
+    fn the_symbolic_meters_sit_inside_the_frame() {
+        let inner = FRAME_INNER.inset(1.0);
+        for (m, _) in SYMBOLIC.marks {
+            assert!(
+                m.x >= inner.x
+                    && m.y >= inner.y
+                    && m.x + m.w <= inner.x + inner.w
+                    && m.y + m.h <= inner.y + inner.h,
+                "{m:?} touches the frame"
+            );
+        }
+        assert!(FRAME.contains("M3 2h10a2 2 0 0 1 2 2v8"));
+    }
+
     #[test]
     fn the_meters_are_centred_on_the_tile() {
-        for grid in [&LARGE, &SMALL, &SYMBOLIC] {
+        for grid in [&LARGE, &SMALL] {
             let top = grid.marks.iter().map(|(m, _)| m.y).fold(f32::MAX, f32::min);
             let bottom = grid
                 .marks

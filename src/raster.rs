@@ -90,8 +90,21 @@ impl<'a> Canvas<'a> {
     }
 
     pub fn to_argb32_be(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.pixels.len());
-        for pixel in self.pixels.as_chunks::<4>().0 {
+        self.straight()
+            .flat_map(|Rgba(r, g, b, a)| [a, r, g, b])
+            .collect()
+    }
+
+    /// For PNG.
+    pub fn to_rgba(&self) -> Vec<u8> {
+        self.straight()
+            .flat_map(|Rgba(r, g, b, a)| [r, g, b, a])
+            .collect()
+    }
+
+    /// Each pixel with its alpha divided back out.
+    fn straight(&self) -> impl Iterator<Item = Rgba> + '_ {
+        self.pixels.as_chunks::<4>().0.iter().map(|pixel| {
             let alpha = pixel[3];
             let straight = |premultiplied: u8| {
                 if alpha == 0 {
@@ -101,14 +114,13 @@ impl<'a> Canvas<'a> {
                         .min(255) as u8
                 }
             };
-            out.extend_from_slice(&[
-                alpha,
+            Rgba(
                 straight(pixel[2]),
                 straight(pixel[1]),
                 straight(pixel[0]),
-            ]);
-        }
-        out
+                alpha,
+            )
+        })
     }
 }
 

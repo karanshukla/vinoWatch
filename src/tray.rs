@@ -12,11 +12,15 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::driver::{self, Verdict};
 use crate::icon::{self, State};
-use crate::sample::{Sampler, Snapshot};
+use crate::sample::{Proc, Sampler, Snapshot};
 
 /// Below this the NPU counts as idle; the busy counter ticks a little even
 /// between inferences.
 const NPU_BUSY_PERCENT: f64 = 1.0;
+
+/// One process holding this share of RAM gets an amber row: about 3 GiB on a
+/// 16 GiB machine. Its RAM meter is full here.
+const HEAVY_RAM_SHARE: f64 = 0.2;
 
 /// The menu's driver actions, run off the tray's thread: the probe takes up
 /// to a minute and the reload waits for `modprobe`.
@@ -53,6 +57,25 @@ impl Driver {
                 ..
             }
         )
+    }
+
+    fn icon_name(&self) -> &'static str {
+        match self {
+            Driver::Unchecked | Driver::Checking | Driver::Resetting => "view-refresh",
+            Driver::Checked {
+                verdict: Verdict::Healthy,
+                ..
+            } => "emblem-success",
+            Driver::Checked {
+                verdict: Verdict::Stuck,
+                ..
+            } => "dialog-warning",
+            Driver::Checked {
+                verdict: Verdict::Unknown(_),
+                ..
+            } => "dialog-question",
+            Driver::ResetFailed(_) => "dialog-error",
+        }
     }
 
     fn label(&self) -> Option<String> {
@@ -171,6 +194,66 @@ impl WatchTray {
         !self.snap.procs.is_empty() || self.snap.npu_percent.is_some_and(|p| p >= NPU_BUSY_PERCENT)
     }
 
+    /// The NPU meter: green while it's busy.
+    fn npu_icon(&self) -> RowIcon {
+        let percent = self.snap.npu_percent.unwrap_or(0.0);
+        let state = if percent >= NPU_BUSY_PERCENT {
+            State::Active
+        } else {
+            State::Idle
+        };
+        RowIcon::Drawn(icon::meter_png(state, &[(percent / 100.0) as f32]))
+    }
+
+    /// How full RAM is: amber when it's low, green while OpenVINO runs.
+    fn ram_icon(&self) -> RowIcon {
+        let used = self.snap.mem.map_or(0.0, |(total, available)| {
+            1.0 - available as f64 / total.max(1) as f64
+        });
+        let state = if self.snap.low_memory {
+            State::LowMemory
+        } else if self.in_use() {
+            State::Active
+        } else {
+            State::Idle
+        };
+        RowIcon::Drawn(icon::meter_png(state, &[used as f32]))
+    }
+
+    fn ram_share(&self, p: &Proc) -> f64 {
+        self.snap
+            .mem
+            .map_or(0.0, |(total, _)| p.ram_bytes as f64 / total.max(1) as f64)
+    }
+
+    /// Amber when it's the heavy one (or the biggest while RAM is low), green
+    /// while it's working, white while it waits.
+    fn proc_state(&self, p: &Proc) -> State {
+        let biggest = self.snap.procs.iter().map(|q| q.ram_bytes).max();
+        if self.ram_share(p) >= HEAVY_RAM_SHARE
+            || (self.snap.low_memory && biggest == Some(p.ram_bytes))
+        {
+            State::LowMemory
+        } else if p.cpu_percent >= 1.0
+            || (p.npu_open && self.snap.npu_percent.is_some_and(|n| n >= NPU_BUSY_PERCENT))
+        {
+            State::Active
+        } else {
+            State::Idle
+        }
+    }
+
+    /// The process's own CPU, RAM and NPU meters. A full CPU meter is one
+    /// core; a full RAM meter is `HEAVY_RAM_SHARE`.
+    fn proc_icon(&self, p: &Proc) -> RowIcon {
+        let levels = [
+            p.cpu_percent / 100.0,
+            (self.ram_share(p) / HEAVY_RAM_SHARE) as f32,
+            if p.npu_open { 1.0 } else { 0.0 },
+        ];
+        RowIcon::Drawn(icon::meter_png(self.proc_state(p), &levels))
+    }
+
     fn state(&self) -> State {
         // The amber icon covers both warnings.
         if self.snap.low_memory || self.driver.stuck() {
@@ -264,14 +347,26 @@ impl ksni::Tray for WatchTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let row = note;
-        let mut items = vec![row(self.summary()), row(self.snap.ram_label())];
-        items.extend(self.driver.label().map(row));
+        let mut items = vec![
+            note(self.summary(), self.npu_icon()),
+            note(self.snap.ram_label(), self.ram_icon()),
+        ];
+        items.extend(
+            self.driver
+                .label()
+                .map(|label| note(label, RowIcon::Named(self.driver.icon_name()))),
+        );
         items.push(MenuItem::Separator);
         if self.snap.procs.is_empty() {
-            items.push(row("No OpenVINO processes".into()));
+            let empty = RowIcon::Drawn(icon::meter_png(State::Idle, &[0.0; 3]));
+            items.push(note("No OpenVINO processes".into(), empty));
         }
-        items.extend(self.snap.procs.iter().map(|p| row(p.label())));
+        items.extend(
+            self.snap
+                .procs
+                .iter()
+                .map(|p| note(p.label(), self.proc_icon(p))),
+        );
         items.push(MenuItem::Separator);
         // Once checked, keep these: a reload whose modprobe failed leaves no
         // device, and the reset is how to retry.
@@ -279,7 +374,10 @@ impl ksni::Tray for WatchTray {
             items.extend(self.driver_items(driver::reset_installed()));
             items.push(MenuItem::Separator);
         }
-        items.push(row(format!("vinoWatch {}", env!("CARGO_PKG_VERSION"))));
+        items.push(note(
+            format!("vinoWatch {}", env!("CARGO_PKG_VERSION")),
+            RowIcon::Named("vinowatch"),
+        ));
         items.push(
             StandardItem {
                 label: "Quit".into(),
@@ -300,6 +398,7 @@ impl WatchTray {
         let mut items: Vec<MenuItem<Self>> = vec![
             StandardItem {
                 label: "Check NPU driver".into(),
+                icon_name: "system-search".into(),
                 enabled: !busy,
                 activate: Box::new(|tray: &mut Self| tray.start(Job::Check)),
                 ..Default::default()
@@ -308,11 +407,14 @@ impl WatchTray {
         ];
         if !reset_installed {
             if self.driver.stuck() {
-                items.push(note("Reset needs: sudo ./install-npu-reset.sh".into()));
+                items.push(note(
+                    "Reset needs: sudo ./install-npu-reset.sh".into(),
+                    RowIcon::Named("dialog-information"),
+                ));
             }
             return items;
         }
-        let holders: Vec<String> = self.holders().map(|p| p.label()).collect();
+        let holders: Vec<&Proc> = self.holders().collect();
         items.push(
             StandardItem {
                 label: "Reset NPU driver".into(),
@@ -325,18 +427,34 @@ impl WatchTray {
             .into(),
         );
         if !holders.is_empty() {
-            items.push(note("Close these first:".into()));
-            items.extend(holders.into_iter().map(note));
+            items.push(note(
+                "Close these first:".into(),
+                RowIcon::Named("dialog-warning"),
+            ));
+            items.extend(self.holders().map(|p| note(p.label(), self.proc_icon(p))));
         }
         items
     }
 }
 
-/// A row of text: disabled, so clicking it does nothing.
-fn note(label: String) -> MenuItem<WatchTray> {
+enum RowIcon {
+    /// From the icon theme.
+    Named(&'static str),
+    /// PNG.
+    Drawn(Vec<u8>),
+}
+
+/// A row of text: clicking it does nothing. Left enabled, because hosts grey
+/// out a disabled row's icon and the meters are the point.
+fn note(label: String, icon: RowIcon) -> MenuItem<WatchTray> {
+    let (icon_name, icon_data) = match icon {
+        RowIcon::Named(name) => (name.into(), Vec::new()),
+        RowIcon::Drawn(png) => (String::new(), png),
+    };
     StandardItem {
         label: menu_text(&label),
-        enabled: false,
+        icon_name,
+        icon_data,
         ..Default::default()
     }
     .into()
@@ -474,6 +592,76 @@ mod tests {
         tray.snap.npu_percent = Some(30.0);
         assert_eq!(tray.state(), State::Active);
         assert_eq!(pixmaps(State::LowMemory).len(), 6);
+    }
+
+    #[test]
+    fn a_process_row_is_coloured_by_what_it_is_doing() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let proc = |pid, cpu_percent, ram_bytes, npu_open| Proc {
+            pid,
+            name: "x".into(),
+            project: None,
+            cpu_percent,
+            ram_bytes,
+            ram_is_pss: true,
+            npu_open,
+        };
+        let mut tray = WatchTray::new(None, None);
+        tray.snap.mem = Some((16 * GIB, 8 * GIB));
+        tray.snap.npu_percent = Some(0.0);
+        let waiting = proc(1, 0.2, GIB, true);
+        let working = proc(2, 40.0, GIB / 2, false);
+        let heavy = proc(3, 0.0, 4 * GIB, false);
+        tray.snap.procs = vec![waiting.clone(), working.clone(), heavy.clone()];
+        assert_eq!(tray.proc_state(&waiting), State::Idle);
+        assert_eq!(tray.proc_state(&working), State::Active);
+        assert_eq!(tray.proc_state(&heavy), State::LowMemory);
+        // Holding the NPU counts as work once the NPU is busy.
+        tray.snap.npu_percent = Some(30.0);
+        assert_eq!(tray.proc_state(&waiting), State::Active);
+        // Low RAM points at the biggest process even under the threshold.
+        tray.snap.procs = vec![waiting.clone(), working.clone()];
+        tray.snap.low_memory = true;
+        assert_eq!(tray.proc_state(&waiting), State::LowMemory);
+        assert_eq!(tray.proc_state(&working), State::Active);
+    }
+
+    #[test]
+    fn every_row_has_an_icon() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        tray.snap.npu_present = true;
+        tray.snap.procs.push(Proc {
+            pid: 1,
+            name: "x".into(),
+            project: None,
+            cpu_percent: 0.0,
+            ram_bytes: 0,
+            ram_is_pss: true,
+            npu_open: true,
+        });
+        tray.driver = Driver::Checked {
+            verdict: Verdict::Stuck,
+            after_reset: false,
+        };
+        for reset_installed in [false, true] {
+            let mut items = tray.menu();
+            items.extend(tray.driver_items(reset_installed));
+            for item in items {
+                if let MenuItem::Standard(item) = item {
+                    assert!(
+                        !item.icon_name.is_empty() || !item.icon_data.is_empty(),
+                        "{} has no icon",
+                        item.label
+                    );
+                    assert!(
+                        item.enabled || item.label.contains("NPU driver"),
+                        "{} greys its icon",
+                        item.label
+                    );
+                }
+            }
+        }
     }
 
     #[test]
