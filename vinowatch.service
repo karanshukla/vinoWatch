@@ -26,6 +26,8 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 ProtectSystem=strict
 ProtectHome=read-only
+# ProtectHome= covers /run/user too; the single-instance lock lives there.
+ReadWritePaths=%t
 ProtectControlGroups=yes
 
 [Install]
