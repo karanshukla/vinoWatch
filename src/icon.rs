@@ -131,19 +131,23 @@ const SMALL: Grid = Grid {
     size: 16.0,
 };
 
-/// 16-unit design for the symbolic tray icon, which has no tile: the meters
-/// sit on a 12-unit square with a 2-unit margin, the same footprint as the
-/// other icons in the tray.
+/// The symbolic icon's outline: vinoWhisper's and vinoPop's tray frame, path
+/// for path, so the vino icons sit together in the panel.
+const FRAME: &str = "M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z\
+                     M3 3h10a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1z";
+
+/// 16-unit design for the symbolic tray icon: inside `FRAME`, three 1-unit
+/// meters in vinoWhisper's line style, each level a gap away from its track.
 const SYMBOLIC: Grid = Grid {
     tile: Shape::new(0.0, 0.0, 16.0, 16.0, 0.0),
     edge: 0.0,
     marks: &[
-        (Shape::new(9.0, 3.0, 5.0, 2.0, 0.0), Part::Track),
-        (Shape::new(2.0, 3.0, 7.0, 2.0, 0.0), Part::Level),
-        (Shape::new(12.0, 7.0, 2.0, 2.0, 0.0), Part::Track),
-        (Shape::new(2.0, 7.0, 10.0, 2.0, 0.0), Part::Level),
-        (Shape::new(7.0, 11.0, 7.0, 2.0, 0.0), Part::Track),
-        (Shape::new(2.0, 11.0, 5.0, 2.0, 0.0), Part::Level),
+        (Shape::new(4.0, 5.0, 4.0, 1.0, 0.0), Part::Level),
+        (Shape::new(9.0, 5.0, 3.0, 1.0, 0.0), Part::Track),
+        (Shape::new(4.0, 8.0, 6.0, 1.0, 0.0), Part::Level),
+        (Shape::new(11.0, 8.0, 1.0, 1.0, 0.0), Part::Track),
+        (Shape::new(4.0, 11.0, 2.0, 1.0, 0.0), Part::Level),
+        (Shape::new(7.0, 11.0, 5.0, 1.0, 0.0), Part::Track),
     ],
     size: 16.0,
 };
@@ -222,9 +226,10 @@ pub fn symbolic_svg(state: State) -> String {
     } else {
         TRAY_GREEN
     });
-    let mut svg = String::from(
+    let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\n  \
-         <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text { color: #232629; }</style>\n",
+         <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text {{ color: #232629; }}</style>\n  \
+         <path class=\"ColorScheme-Text\" style=\"fill:currentColor\" fill-rule=\"evenodd\" d=\"{FRAME}\"/>\n",
     );
     for (path, style) in [
         (text, "fill:currentColor".to_string()),
@@ -446,9 +451,27 @@ mod tests {
         }
     }
 
+    /// The inside of `FRAME`.
+    const FRAME_INNER: Shape = Shape::new(2.0, 3.0, 12.0, 10.0, 1.0);
+
+    #[test]
+    fn the_symbolic_meters_sit_inside_the_frame() {
+        let inner = FRAME_INNER.inset(1.0);
+        for (m, _) in SYMBOLIC.marks {
+            assert!(
+                m.x >= inner.x
+                    && m.y >= inner.y
+                    && m.x + m.w <= inner.x + inner.w
+                    && m.y + m.h <= inner.y + inner.h,
+                "{m:?} touches the frame"
+            );
+        }
+        assert!(FRAME.contains("M3 2h10a2 2 0 0 1 2 2v8"));
+    }
+
     #[test]
     fn the_meters_are_centred_on_the_tile() {
-        for grid in [&LARGE, &SMALL, &SYMBOLIC] {
+        for grid in [&LARGE, &SMALL] {
             let top = grid.marks.iter().map(|(m, _)| m.y).fold(f32::MAX, f32::min);
             let bottom = grid
                 .marks
