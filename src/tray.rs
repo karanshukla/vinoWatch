@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, ToolTip, TrayMethods};
@@ -17,6 +17,10 @@ use crate::sample::{Proc, Sampler, Snapshot};
 /// Below this the NPU counts as idle; the busy counter ticks a little even
 /// between inferences.
 const NPU_BUSY_PERCENT: f64 = 1.0;
+
+/// The icon goes passive once the NPU has been idle this long, as the other
+/// vino trays do after their idle minutes.
+const HIDE_AFTER: Duration = Duration::from_secs(5 * 60);
 
 /// One process holding this share of RAM gets an amber row: about 3 GiB on a
 /// 16 GiB machine. Its RAM meter is full here.
@@ -137,6 +141,10 @@ struct WatchTray {
     /// needs an interpreter with openvino.
     seen_pythons: Vec<PathBuf>,
     jobs: Option<UnboundedSender<Job>>,
+    /// The last poll with the NPU busy, or startup.
+    npu_used: Instant,
+    /// `HIDE_AFTER` has passed since `npu_used`.
+    npu_quiet: bool,
 }
 
 impl WatchTray {
@@ -147,10 +155,20 @@ impl WatchTray {
             probe_python,
             seen_pythons: Vec::new(),
             jobs,
+            npu_used: Instant::now(),
+            npu_quiet: false,
         }
     }
 
     fn set_snapshot(&mut self, snap: Snapshot) {
+        self.set_snapshot_at(snap, Instant::now());
+    }
+
+    fn set_snapshot_at(&mut self, snap: Snapshot, now: Instant) {
+        if snap.npu_percent.is_some_and(|p| p >= NPU_BUSY_PERCENT) {
+            self.npu_used = now;
+        }
+        self.npu_quiet = now.saturating_duration_since(self.npu_used) >= HIDE_AFTER;
         for python in &snap.pythons {
             self.seen_pythons.retain(|p| p != python);
             self.seen_pythons.push(python.clone());
@@ -307,15 +325,15 @@ impl ksni::Tray for WatchTray {
     }
 
     // Passive, as vinoWhisper does when idle: the host hides the icon (Plasma
-    // files it under the expander, waybar drops it) until a vino app runs.
+    // files it under the expander, waybar drops it) until the NPU is used.
     fn status(&self) -> ksni::Status {
         // A stuck driver stays in view after its apps exit: that is when the
         // reset can run.
         if self.driver.stuck() {
             ksni::Status::NeedsAttention
-        } else if !self.in_use() {
+        } else if self.npu_quiet && !self.driver.busy() {
             ksni::Status::Passive
-        } else if self.snap.low_memory {
+        } else if self.snap.low_memory && self.in_use() {
             ksni::Status::NeedsAttention
         } else {
             ksni::Status::Active
@@ -665,19 +683,44 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_hides_while_nothing_uses_openvino() {
+    fn the_icon_hides_once_the_npu_has_idled_five_minutes() {
         use ksni::Tray;
         let mut tray = WatchTray::new(None, None);
-        assert_eq!(tray.status(), ksni::Status::Passive);
+        let start = tray.npu_used;
+        let snap = |npu: f64| Snapshot {
+            npu_percent: Some(npu),
+            ..Default::default()
+        };
+        // In view from startup until the first five quiet minutes pass.
+        tray.set_snapshot_at(snap(0.0), start + Duration::from_secs(60));
+        assert_eq!(tray.status(), ksni::Status::Active);
         // Low memory on its own is not about the vino apps.
         tray.snap.low_memory = true;
-        assert_eq!(tray.status(), ksni::Status::Passive);
-        tray.snap.npu_percent = Some(0.4);
-        assert_eq!(tray.status(), ksni::Status::Passive);
-        tray.snap.npu_percent = Some(30.0);
-        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
-        tray.snap.low_memory = false;
         assert_eq!(tray.status(), ksni::Status::Active);
+        tray.set_snapshot_at(snap(0.4), start + HIDE_AFTER);
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        // A resident app with the NPU idle doesn't bring it back.
+        let app = Proc {
+            pid: 1,
+            name: "vino_speak".into(),
+            project: None,
+            cpu_percent: 3.0,
+            ram_bytes: 1,
+            ram_is_pss: true,
+            npu_open: true,
+        };
+        tray.snap.procs.push(app.clone());
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        let used = start + HIDE_AFTER * 2;
+        tray.set_snapshot_at(snap(30.0), used);
+        assert_eq!(tray.status(), ksni::Status::Active);
+        tray.set_snapshot_at(snap(0.0), used + HIDE_AFTER - Duration::from_secs(1));
+        assert_eq!(tray.status(), ksni::Status::Active);
+        tray.snap.low_memory = true;
+        tray.snap.procs.push(app);
+        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
+        tray.set_snapshot_at(snap(0.0), used + HIDE_AFTER);
+        assert_eq!(tray.status(), ksni::Status::Passive);
     }
 
     fn labels(tray: &WatchTray) -> Vec<String> {
@@ -779,6 +822,7 @@ mod tests {
             after_reset: true,
         };
         assert_eq!(tray.state(), State::Idle);
+        tray.npu_quiet = true;
         assert_eq!(tray.status(), ksni::Status::Passive);
     }
 
