@@ -12,7 +12,7 @@ Guidance for Claude Code when working in this repository.
 - `src/npu.rs`: the busy-time counter and the percentage between polls.
 - `src/sample.rs`: one poll, plus the `--json` shape.
 - `src/tray.rs`: ksni StatusNotifierItem, behind the default `tray` feature.
-- `src/icon.rs`, `src/raster.rs`: the icons, drawn from one shape list as tray pixmaps and as the SVGs `--install-icons` writes. Same palette and grid as vinoAuthFace's tray. `data/` holds the generated SVGs; after changing a shape run `VINOWATCH_BLESS_ICONS=1 cargo test`.
+- `src/icon.rs`, `src/raster.rs`, `src/png.rs`: the icons, drawn from one shape list as tray pixmaps, as the SVGs `--install-icons` writes, and as the PNG meters on each menu row (dbusmenu only takes PNG). Same palette and grid as vinoAuthFace's tray. `data/` holds the generated SVGs; after changing a shape run `VINOWATCH_BLESS_ICONS=1 cargo test`.
 - `src/driver.rs`: the stuck-`intel_vpu` probe (runs Python, as vinoPop's `npu_canary.py`) and the reload via `vino-npu-reset.service`. Root half: `install-npu-reset.sh`, `vino-npu-reset.service`, `vino-npu-reset.rules`.
 - `src/cli.rs`: flags.
 

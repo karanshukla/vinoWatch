@@ -9,6 +9,8 @@ mod icon;
 mod instance;
 mod npu;
 #[cfg(feature = "tray")]
+mod png;
+#[cfg(feature = "tray")]
 mod raster;
 mod sample;
 #[cfg(feature = "tray")]

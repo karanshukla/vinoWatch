@@ -297,12 +297,71 @@ fn tray_icon(state: State, size: u32) -> ksni::Icon {
 
 fn draw(canvas: &mut Canvas, grid: &Grid, state: State, size: f32) {
     let unit = size / grid.size;
-    let tile = grid.tile.rect(unit);
-    canvas.fill_rounded(tile, grid.tile.r * unit, TILE);
-    canvas.stroke_rounded(tile, grid.tile.r * unit, grid.edge * unit, EDGE);
+    draw_tile(canvas, grid, unit);
     for &(shape, part) in grid.marks {
         canvas.fill_rounded(shape.rect(unit), shape.r * unit, paint(state, part));
     }
+}
+
+fn draw_tile(canvas: &mut Canvas, grid: &Grid, unit: f32) {
+    let tile = grid.tile.rect(unit);
+    canvas.fill_rounded(tile, grid.tile.r * unit, TILE);
+    canvas.stroke_rounded(tile, grid.tile.r * unit, grid.edge * unit, EDGE);
+}
+
+/// Menu row icons are drawn at this size and scaled down by the host: a 16 px
+/// menu icon is 24 px at 150%, 32 px at 200%.
+const ROW_ICON: u32 = 48;
+
+/// The one meter of a single-level row icon: the three meters' span, twice as
+/// thick.
+const WIDE_METER: Shape = Shape::new(14.0, 27.0, 36.0, 10.0, 5.0);
+
+/// The meters of a row icon on the 64-unit grid: each track, and the level
+/// over it when there is one. `levels` are 0 to 1, one meter or three.
+fn meters(levels: &[f32]) -> Vec<(Shape, Option<Shape>)> {
+    let tracks: Vec<Shape> = if levels.len() == 1 {
+        vec![WIDE_METER]
+    } else {
+        LARGE
+            .marks
+            .iter()
+            .filter(|(_, part)| *part == Part::Track)
+            .map(|(shape, _)| *shape)
+            .collect()
+    };
+    tracks
+        .into_iter()
+        .zip(levels)
+        .map(|(track, &level)| {
+            // In 2-unit steps, so a level that barely moves doesn't redraw the
+            // menu; anything above zero shows at least as a dot.
+            let steps = track.w / 2.0;
+            let filled = (level.clamp(0.0, 1.0) * steps).round() / steps * track.w;
+            let level = (level > 0.0).then(|| Shape {
+                w: filled.max(track.h),
+                ..track
+            });
+            (track, level)
+        })
+        .collect()
+}
+
+/// A menu row's icon, as PNG: the tile with one meter per level, filled in
+/// `state`'s colour, so a row shows its own numbers at a glance.
+pub fn meter_png(state: State, levels: &[f32]) -> Vec<u8> {
+    let mut pixels = vec![0u8; (ROW_ICON * ROW_ICON * 4) as usize];
+    let mut canvas = Canvas::new(&mut pixels, ROW_ICON, ROW_ICON);
+    let unit = ROW_ICON as f32 / LARGE.size;
+    draw_tile(&mut canvas, &LARGE, unit);
+    for (track, level) in meters(levels) {
+        canvas.fill_rounded(track.rect(unit), track.r * unit, TRACK);
+        if let Some(level) = level {
+            let colour = paint(state, Part::Level);
+            canvas.fill_rounded(level.rect(unit), level.r * unit, colour);
+        }
+    }
+    crate::png::encode(ROW_ICON, ROW_ICON, &canvas.to_rgba())
 }
 
 #[cfg(test)]
@@ -327,6 +386,36 @@ mod tests {
         }
         let [a, b, c] = State::ALL.map(symbolic_svg);
         assert!(a != b && b != c && a != c, "symbolic states collide");
+    }
+
+    #[test]
+    fn row_meters_follow_their_levels() {
+        let levels = |input: &[f32]| -> Vec<Option<f32>> {
+            meters(input)
+                .into_iter()
+                .map(|(_, l)| l.map(|l| l.w))
+                .collect()
+        };
+        assert_eq!(levels(&[0.0, 1.0, 0.5]), [None, Some(36.0), Some(18.0)]);
+        // Over-full is full; a sliver is a round dot, not nothing.
+        assert_eq!(levels(&[2.0, 0.001, 0.0]), [Some(36.0), Some(6.0), None]);
+        assert_eq!(levels(&[0.25]), [Some(10.0)]);
+        // A level that barely moves draws the same icon.
+        assert_eq!(
+            meter_png(State::Active, &[0.5]),
+            meter_png(State::Active, &[0.51])
+        );
+        assert_ne!(
+            meter_png(State::Active, &[0.5]),
+            meter_png(State::Idle, &[0.5])
+        );
+    }
+
+    #[test]
+    fn the_wide_meter_is_centred_in_the_three() {
+        let (top, bottom) = (LARGE.marks[0].0.y, LARGE.marks[5].0.y + LARGE.marks[5].0.h);
+        assert_eq!(WIDE_METER.y + WIDE_METER.h / 2.0, (top + bottom) / 2.0);
+        assert_eq!(WIDE_METER.r * 2.0, WIDE_METER.h);
     }
 
     #[test]
