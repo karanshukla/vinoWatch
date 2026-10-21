@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-20
+
+### Added
+
+- **Check NPU driver** in the tray menu: a short probe on demand (vinoPop's canary) that tells whether the `intel_vpu` driver is stuck. A stuck driver turns the icon amber and keeps it in view. `vinowatch --check-npu` runs the same probe from a terminal, and `--probe-python PATH` picks its interpreter.
+- **Reset NPU driver** reloads `intel_vpu` through a root oneshot unit and checks again afterwards. It lists the apps holding the NPU and waits for them to close. Needs a one-time `sudo ./install-npu-reset.sh`.
+- The result of a driver check or reset is also sent as a desktop notification.
+- Every tray menu row has an icon. The NPU and RAM rows show their level; a process row shows that process's CPU, RAM and whether it holds the NPU, white while idle, green while working and amber when it holds 20% of RAM or more.
+- vinoSearch's runner is recognised.
+
+### Changed
+
+- The panel icon uses vinoWhisper's and vinoPop's frame, with the meters drawn in the same line style.
+- The app icon is cropped to a 2-unit margin, so it draws the same size as other apps' icons.
+- `install.sh` makes Plasma reload icons after installing them, so an updated icon shows without logging out.
+
+### Fixed
+
+- Under the systemd unit the tray couldn't read the other apps' `/proc` maps, PSS or open files: the unit's `ProtectSystem=`/`ProtectHome=`/`ProtectControlGroups=` put it in a user namespace. It listed processes that don't use OpenVINO, reported RSS, never showed `NPU open`, and couldn't take the single-instance lock. Those lines are gone.
+- The unit failed every start on systemd 255 (Ubuntu 24.04) with 218/CAPABILITIES; `ProtectKernelModules=` and `ProtectKernelLogs=` are gone.
+- NPU load from a process vinoWatch can't list now turns the icon green, as the menu already said.
+
 ## [0.1.0] - 2026-10-18
 
 ### Added
