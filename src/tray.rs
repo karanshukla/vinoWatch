@@ -849,4 +849,216 @@ mod tests {
         let tray = WatchTray::new(Some("/opt/py".into()), None);
         assert_eq!(tray.python(), PathBuf::from("/opt/py"));
     }
+
+    fn app(pid: u32, name: &str, npu_open: bool) -> Proc {
+        Proc {
+            pid,
+            name: name.into(),
+            project: None,
+            cpu_percent: 12.0,
+            ram_bytes: 512 * 1024 * 1024,
+            ram_is_pss: true,
+            npu_open,
+        }
+    }
+
+    /// Every situation that changes the icon, tooltip or menu.
+    fn situations() -> Vec<(&'static str, WatchTray)> {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let base = || {
+            let mut tray = WatchTray::new(None, None);
+            tray.snap.mem = Some((16 * GIB, 8 * GIB));
+            tray.snap.npu_percent = Some(0.0);
+            tray.snap.npu_present = true;
+            tray
+        };
+        let mut all = vec![("idle", base())];
+        let mut tray = base();
+        tray.snap.npu_percent = None;
+        tray.snap.npu_present = false;
+        all.push(("no NPU", tray));
+        let mut tray = base();
+        tray.snap.procs.push(app(7, "vino_speak", true));
+        tray.snap.npu_percent = Some(40.0);
+        all.push(("active", tray));
+        let mut tray = base();
+        tray.snap.procs.push(app(7, "vino_speak", false));
+        tray.snap.mem = Some((16 * GIB, GIB / 2));
+        tray.snap.low_memory = true;
+        all.push(("low memory", tray));
+        for (name, driver) in [
+            ("checking", Driver::Checking),
+            ("resetting", Driver::Resetting),
+            (
+                "healthy",
+                Driver::Checked {
+                    verdict: Verdict::Healthy,
+                    after_reset: false,
+                },
+            ),
+            (
+                "stuck",
+                Driver::Checked {
+                    verdict: Verdict::Stuck,
+                    after_reset: false,
+                },
+            ),
+            (
+                "stuck after reset",
+                Driver::Checked {
+                    verdict: Verdict::Stuck,
+                    after_reset: true,
+                },
+            ),
+            (
+                "inconclusive",
+                Driver::Checked {
+                    verdict: Verdict::Unknown("no_module named openvino".into()),
+                    after_reset: false,
+                },
+            ),
+            (
+                "reset failed",
+                Driver::ResetFailed("modprobe failed".into()),
+            ),
+        ] {
+            let mut tray = base();
+            tray.driver = driver;
+            all.push((name, tray));
+        }
+        all
+    }
+
+    /// What a screen reader reads: the label without dbusmenu's access-key
+    /// markers.
+    fn spoken(label: &str) -> String {
+        label
+            .replace("__", "\u{0}")
+            .replace('_', "")
+            .replace('\u{0}', "_")
+    }
+
+    /// One item: labelled, shown, and with any underscore kept.
+    fn check(label: &str, visible: bool, out: &mut Vec<String>) {
+        assert!(!spoken(label).trim().is_empty(), "unlabelled item");
+        assert!(visible, "{label:?} is hidden instead of disabled");
+        assert!(
+            !label.replace("__", "").contains('_'),
+            "{label:?} loses an underscore"
+        );
+        out.push(spoken(label));
+    }
+
+    /// Every label in a menu, depth first, checking each item on the way.
+    fn walk(items: &[MenuItem<WatchTray>], out: &mut Vec<String>) {
+        for item in items {
+            match item {
+                MenuItem::Standard(i) => check(&i.label, i.visible, out),
+                MenuItem::Checkmark(i) => check(&i.label, i.visible, out),
+                MenuItem::SubMenu(m) => {
+                    check(&m.label, m.visible, out);
+                    walk(&m.submenu, out);
+                }
+                MenuItem::RadioGroup(g) => g
+                    .options
+                    .iter()
+                    .for_each(|o| check(&o.label, o.visible, out)),
+                MenuItem::Separator => {}
+            }
+        }
+    }
+
+    fn all_labels(tray: &WatchTray) -> Vec<String> {
+        use ksni::Tray;
+        let mut out = Vec::new();
+        walk(&tray.menu(), &mut out);
+        for reset_installed in [false, true] {
+            walk(&tray.driver_items(reset_installed), &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn every_menu_item_has_a_label() {
+        for (name, tray) in situations() {
+            let labels = all_labels(&tray);
+            assert!(labels.contains(&"Quit".to_string()), "{name}: {labels:?}");
+        }
+        let (_, active) = situations().swap_remove(2);
+        assert!(
+            all_labels(&active)
+                .iter()
+                .any(|l| l.starts_with("vino_speak pid 7")),
+            "the underscore in vino_speak is lost"
+        );
+    }
+
+    #[test]
+    fn the_item_names_itself() {
+        use ksni::Tray;
+        let tray = WatchTray::new(None, None);
+        assert_eq!(tray.id(), "vinowatch");
+        assert_eq!(tray.title(), "vinoWatch");
+        assert_eq!(tray.category(), Category::ApplicationStatus);
+        assert_eq!(tray.tool_tip().title, "vinoWatch");
+    }
+
+    /// The icon has three looks; the tooltip tells every situation apart, so
+    /// nothing depends on seeing its colour, and the menu's first rows say the
+    /// same for hosts that show no tooltip.
+    #[test]
+    fn each_state_has_its_own_text() {
+        use ksni::Tray;
+        let mut seen: Vec<(&str, String)> = Vec::new();
+        for (name, tray) in situations() {
+            let tip = tray.tool_tip().description;
+            assert!(!tip.trim().is_empty(), "{name} has no tooltip text");
+            if let Some((other, _)) = seen.iter().find(|(_, t)| *t == tip) {
+                panic!("{name} and {other} both read {tip:?}");
+            }
+            let labels = all_labels(&tray);
+            for line in tip.lines() {
+                assert!(
+                    labels.iter().any(|l| l == line),
+                    "{name}: {line:?} is only in the tooltip"
+                );
+            }
+            seen.push((name, tip));
+        }
+        // The amber icon covers two warnings; the text names each.
+        let tips: HashMap<_, _> = situations()
+            .into_iter()
+            .map(|(n, t)| (n, t.tool_tip().description))
+            .collect();
+        assert!(
+            tips["low memory"].contains("(low)"),
+            "{}",
+            tips["low memory"]
+        );
+        assert!(tips["stuck"].contains("stuck"), "{}", tips["stuck"]);
+        let names = State::ALL.map(State::icon_name);
+        assert!(names[0] != names[1] && names[1] != names[2] && names[0] != names[2]);
+    }
+
+    #[test]
+    fn a_running_check_greys_the_actions_and_says_why() {
+        use ksni::Tray;
+        for (name, tray) in situations() {
+            let busy = tray.driver.busy();
+            let menu = tray.menu();
+            for item in tray.driver_items(true) {
+                if let MenuItem::Standard(i) = item
+                    && i.label == "Check NPU driver"
+                {
+                    assert_eq!(i.enabled, !busy, "{name}");
+                }
+            }
+            if busy {
+                let MenuItem::Standard(first) = &menu[2] else {
+                    panic!("{name}: no driver row")
+                };
+                assert!(first.label.ends_with('…'), "{name}: {}", first.label);
+            }
+        }
+    }
 }

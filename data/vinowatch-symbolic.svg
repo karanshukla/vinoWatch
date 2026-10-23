@@ -2,5 +2,5 @@
   <style id="current-color-scheme" type="text/css">.ColorScheme-Text { color: #232629; }</style>
   <path class="ColorScheme-Text" style="fill:currentColor" fill-rule="evenodd" d="M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM3 3h10a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1z"/>
   <path class="ColorScheme-Text" style="fill:currentColor" d="M4 5h4v1h-4zM4 8h6v1h-6zM4 11h2v1h-2z"/>
-  <path class="ColorScheme-Text" style="fill:currentColor;fill-opacity:0.5" d="M9 5h3v1h-3zM11 8h1v1h-1zM7 11h5v1h-5z"/>
+  <path class="ColorScheme-Text" style="fill:currentColor;fill-opacity:0.6" d="M9 5h3v1h-3zM11 8h1v1h-1zM7 11h5v1h-5z"/>
 </svg>
