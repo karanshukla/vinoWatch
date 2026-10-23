@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-23
+
+### Changed
+
+- The tray icon hides once the NPU has been under 1% for 5 minutes, as the other vino trays do, instead of staying in view whenever an OpenVINO app is resident. NPU load brings it back; a stuck driver or a running driver check keeps it in view.
+
+### Fixed
+
+- The empty track of each meter, in the tray icon and every menu row, was 2.1:1 against its tile, so a meter's length didn't show. It is now 3:1, as are the symbolic icons' tracks on Breeze Light.
+
 ## [0.2.0] - 2026-10-20
 
 ### Added
