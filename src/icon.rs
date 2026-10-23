@@ -75,7 +75,9 @@ enum Part {
 const TILE: Rgba = Rgba(14, 14, 16, 255);
 const EDGE: Rgba = Rgba(255, 255, 255, 46);
 const WHITE: Rgba = Rgba(250, 250, 250, 255);
-const TRACK: Rgba = Rgba(160, 164, 172, 100);
+// Opaque enough that a meter's empty length shows against the tile (3:1),
+// and faint enough that its green level still shows against the track (3:1).
+const TRACK: Rgba = Rgba(160, 164, 172, 140);
 const GREEN: Rgba = Rgba(86, 204, 120, 255);
 const AMBER: Rgba = Rgba(245, 184, 66, 255);
 
@@ -210,7 +212,9 @@ impl State {
 
 /// A monochrome tray icon for one state, in the KDE symbolic format: the
 /// `ColorScheme-Text` class is what Plasma recolours. The tracks and an idle
-/// level follow the theme; the green and amber levels stay fixed.
+/// level follow the theme; the green and amber levels stay fixed. The tracks
+/// are at 0.6, not 0.5: half of Breeze Light's text colour falls just short
+/// of 3:1 on its panel.
 pub fn symbolic_svg(state: State) -> String {
     let (mut text, mut dim, mut accent) = (String::new(), String::new(), String::new());
     for &(shape, part) in SYMBOLIC.marks {
@@ -233,7 +237,7 @@ pub fn symbolic_svg(state: State) -> String {
     );
     for (path, style) in [
         (text, "fill:currentColor".to_string()),
-        (dim, "fill:currentColor;fill-opacity:0.5".to_string()),
+        (dim, "fill:currentColor;fill-opacity:0.6".to_string()),
         (accent, format!("fill:{accent_fill}")),
     ] {
         if !path.is_empty() {
@@ -355,6 +359,11 @@ fn meters(levels: &[f32]) -> Vec<(Shape, Option<Shape>)> {
 /// A menu row's icon, as PNG: the tile with one meter per level, filled in
 /// `state`'s colour, so a row shows its own numbers at a glance.
 pub fn meter_png(state: State, levels: &[f32]) -> Vec<u8> {
+    crate::png::encode(ROW_ICON, ROW_ICON, &meter_rgba(state, levels))
+}
+
+/// `meter_png`'s pixels, straight RGBA.
+fn meter_rgba(state: State, levels: &[f32]) -> Vec<u8> {
     let mut pixels = vec![0u8; (ROW_ICON * ROW_ICON * 4) as usize];
     let mut canvas = Canvas::new(&mut pixels, ROW_ICON, ROW_ICON);
     let unit = ROW_ICON as f32 / LARGE.size;
@@ -366,7 +375,7 @@ pub fn meter_png(state: State, levels: &[f32]) -> Vec<u8> {
             canvas.fill_rounded(level.rect(unit), level.r * unit, colour);
         }
     }
-    crate::png::encode(ROW_ICON, ROW_ICON, &canvas.to_rgba())
+    canvas.to_rgba()
 }
 
 #[cfg(test)]
@@ -525,17 +534,162 @@ mod tests {
         0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
     }
 
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let (a, b) = (luminance(a) + 0.05, luminance(b) + 0.05);
+        a.max(b) / a.min(b)
+    }
+
+    /// `top` at `alpha` over `under`, blended in sRGB as SVG renderers do.
+    fn over(top: Rgba, alpha: f32, under: Rgba) -> Rgba {
+        let mix =
+            |t: u8, u: u8| (f32::from(t) * alpha + f32::from(u) * (1.0 - alpha)).round() as u8;
+        Rgba(
+            mix(top.0, under.0),
+            mix(top.1, under.1),
+            mix(top.2, under.2),
+            255,
+        )
+    }
+
+    /// Panel backgrounds, each with the text colour the theme recolours a
+    /// symbolic icon to: Breeze Light, plain white, Breeze Dark (Plasma 6
+    /// and 5), GNOME's black top bar, and waybar's default.
+    const PANELS: [(Rgba, Rgba); 6] = [
+        (Rgba(239, 240, 241, 255), Rgba(35, 38, 41, 255)),
+        (Rgba(255, 255, 255, 255), Rgba(0, 0, 0, 255)),
+        (Rgba(32, 35, 38, 255), Rgba(252, 252, 252, 255)),
+        (Rgba(49, 54, 59, 255), Rgba(252, 252, 252, 255)),
+        (Rgba(0, 0, 0, 255), Rgba(255, 255, 255, 255)),
+        (Rgba(43, 48, 59, 255), Rgba(255, 255, 255, 255)),
+    ];
+
+    /// The pixel in `area` (in pixels) that stands out most from `against`.
+    fn best(pixel: &dyn Fn(u32, u32) -> Rgba, area: Rect, against: Rgba) -> Rgba {
+        (area.y0 as u32..area.y1.ceil() as u32)
+            .flat_map(|y| (area.x0 as u32..area.x1.ceil() as u32).map(move |x| (x, y)))
+            .map(|(x, y)| pixel(x, y))
+            .max_by(|a, b| contrast(*a, against).total_cmp(&contrast(*b, against)))
+            .unwrap()
+    }
+
+    /// One meter, drawn: its level (if any) against the track, and the
+    /// track's empty end against the tile, both 3:1 (WCAG 1.4.11). The tile is
+    /// opaque and surrounds every meter, so the panel never touches them and
+    /// this holds on any panel.
+    fn check_meter(
+        what: &str,
+        pixel: &dyn Fn(u32, u32) -> Rgba,
+        track: Shape,
+        level: Option<Shape>,
+        unit: f32,
+    ) {
+        // The empty end, clear of the level and its anti-aliased edge.
+        let from = level.map_or(track.x, |l| l.x + l.w + 1.0);
+        let end = Shape {
+            x: from,
+            w: track.x + track.w - from,
+            ..track
+        };
+        let empty = best(pixel, end.rect(unit), TILE);
+        let on_tile = contrast(empty, TILE);
+        assert!(
+            on_tile >= 3.0,
+            "{what}: track is {on_tile:.2}:1 on the tile"
+        );
+        let mut marks = vec![("track", empty)];
+        if let Some(level) = level {
+            let filled = best(pixel, level.rect(unit), empty);
+            let c = contrast(filled, empty);
+            assert!(c >= 3.0, "{what}: level is {c:.2}:1 on its track");
+            marks.push(("level", filled));
+        }
+        for (part, colour) in marks {
+            assert_eq!(colour.3, 255, "{what}: {part} is see-through");
+        }
+    }
+
     #[test]
-    fn the_symbolic_accents_show_on_light_and_dark_panels() {
-        // Breeze Light and Breeze Dark panel backgrounds.
-        for panel in [Rgba(239, 240, 241, 255), Rgba(32, 35, 38, 255)] {
-            for accent in [TRAY_GREEN, TRAY_AMBER] {
-                let (a, b) = (luminance(accent) + 0.05, luminance(panel) + 0.05);
-                let contrast = a.max(b) / a.min(b);
-                assert!(
-                    contrast >= 3.0,
-                    "{accent:?} on {panel:?} is only {contrast:.2}:1"
-                );
+    fn the_pixmap_meters_stand_out_on_any_panel() {
+        for state in State::ALL {
+            for icon in tray_icons(state) {
+                let size = icon.width as u32;
+                let grid = if size < 32 { &SMALL } else { &LARGE };
+                let pixel = |x: u32, y: u32| {
+                    let i = ((y * size + x) * 4) as usize;
+                    let [a, r, g, b] = icon.data[i..i + 4] else {
+                        unreachable!()
+                    };
+                    Rgba(r, g, b, a)
+                };
+                for pair in grid.marks.chunks(2) {
+                    let [(track, Part::Track), (level, Part::Level)] = pair else {
+                        panic!("{pair:?} is not a track then its level")
+                    };
+                    let what = format!("{state:?} {size}px");
+                    check_meter(&what, &pixel, *track, Some(*level), size as f32 / grid.size);
+                }
+            }
+        }
+        for (panel, _) in PANELS.iter().filter(|(p, _)| luminance(*p) > 0.5) {
+            assert!(
+                contrast(TILE, *panel) >= 3.0,
+                "the tile vanishes on {panel:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_menu_row_meters_stand_out_on_any_panel() {
+        for state in State::ALL {
+            for levels in [&[0.5][..], &[0.0, 0.3, 1.0], &[0.05, 0.6, 0.0]] {
+                let rgba = meter_rgba(state, levels);
+                let pixel = |x: u32, y: u32| {
+                    let i = ((y * ROW_ICON + x) * 4) as usize;
+                    let [r, g, b, a] = rgba[i..i + 4] else {
+                        unreachable!()
+                    };
+                    Rgba(r, g, b, a)
+                };
+                for (track, level) in meters(levels) {
+                    // A full meter has no empty end to check.
+                    if level.is_some_and(|l| l.w >= track.w - 1.0) {
+                        continue;
+                    }
+                    let what = format!("{state:?} {levels:?}");
+                    check_meter(&what, &pixel, track, level, ROW_ICON as f32 / LARGE.size);
+                }
+            }
+        }
+    }
+
+    /// The symbolic icons have no tile: every path, as the theme recolours it,
+    /// must clear 3:1 against the panel, including the half-opacity tracks.
+    #[test]
+    fn the_symbolic_icons_show_on_light_and_dark_panels() {
+        for state in State::ALL {
+            let svg = symbolic_svg(state);
+            let styles: Vec<&str> = svg
+                .split("style=\"")
+                .skip(1)
+                .map(|s| s.split('"').next().unwrap())
+                .collect();
+            assert!(!styles.is_empty(), "{state:?} draws nothing");
+            for (panel, text) in PANELS {
+                for style in &styles {
+                    let fill = if style.contains("currentColor") {
+                        let alpha = style
+                            .split("fill-opacity:")
+                            .nth(1)
+                            .map_or(1.0, |a| a.parse().unwrap());
+                        over(text, alpha, panel)
+                    } else {
+                        let hex = style.strip_prefix("fill:#").unwrap();
+                        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+                        Rgba(byte(0), byte(2), byte(4), 255)
+                    };
+                    let c = contrast(fill, panel);
+                    assert!(c >= 3.0, "{state:?} {style} is {c:.2}:1 on {panel:?}");
+                }
             }
         }
     }
