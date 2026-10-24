@@ -7,6 +7,8 @@
 # it downloads the latest release, or the one VINOWATCH_VERSION names
 # (e.g. VINOWATCH_VERSION=v0.1.0):
 #   curl -fsSL https://raw.githubusercontent.com/karanshukla/vinoWatch/main/install.sh | sh
+# On Fedora Atomic and other image-based distros, build in a toolbox and run
+# this on the host: it reuses target/release/vinowatch when cargo isn't here.
 set -eu
 
 repo="karanshukla/vinoWatch"
@@ -55,12 +57,21 @@ if [ -z "$here" ]; then
     else
         url="https://github.com/$repo/releases/download/$version"
     fi
+    # Debian and openSUSE minimal installs can have wget without curl.
+    if command -v curl >/dev/null 2>&1; then
+        fetch() { curl -fsSL -o "$1" "$2"; }
+    elif command -v wget >/dev/null 2>&1; then
+        fetch() { wget -q -O "$1" "$2"; }
+    else
+        echo "Neither curl nor wget is installed, so the release can't be downloaded." >&2
+        exit 1
+    fi
     tarball="vinowatch-$arch-linux.tar.gz"
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     echo "Downloading vinowatch $version for $arch..."
-    curl -fsSL -o "$tmp/$tarball" "$url/$tarball"
-    if ! curl -fsSL -o "$tmp/SHA256SUMS" "$url/SHA256SUMS"; then
+    fetch "$tmp/$tarball" "$url/$tarball"
+    if ! fetch "$tmp/SHA256SUMS" "$url/SHA256SUMS"; then
         echo "Couldn't download SHA256SUMS for vinowatch $version, so the download can't be verified." >&2
         echo "Pick another release with VINOWATCH_VERSION, or build from a checkout with ./install.sh." >&2
         exit 1
@@ -80,8 +91,22 @@ fi
 
 # Release archives ship the binary. A checkout has Cargo.toml instead.
 if [ -f "$here/Cargo.toml" ]; then
-    cargo build --release --locked --manifest-path "$here/Cargo.toml"
     built="$here/target/release/vinowatch"
+    if command -v cargo >/dev/null 2>&1; then
+        cargo build --release --locked --manifest-path "$here/Cargo.toml"
+    elif [ -x "$built" ]; then
+        # An image-based host (Silverblue, Kinoite, Bazzite, Aeon) keeps
+        # toolchains in a toolbox; installing still has to happen out here,
+        # where systemctl --user reaches the session's user manager.
+        echo "No cargo here; installing the build already in target/release."
+    else
+        echo "No cargo here to build vinowatch with. Either:" >&2
+        echo "  - install the latest release instead (no toolchain needed):" >&2
+        echo "      curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh" >&2
+        echo "  - or build in a toolbox/distrobox, then rerun this on the host:" >&2
+        echo "      toolbox run cargo build --release --locked && ./install.sh" >&2
+        exit 1
+    fi
 else
     built="$here/vinowatch"
 fi

@@ -57,6 +57,23 @@ OpenVINO apps hold 1.4 GiB of 7.6 GiB RAM, 4.9 GiB available
 
 Build without the tray (and its D-Bus dependency) with `cargo build --release --no-default-features`.
 
+## Distros
+
+The release binaries are static (musl), so the `curl | sh` install works the same on Fedora, Ubuntu/Debian, Arch and openSUSE. It needs `curl` or `wget` (`wget -qO- <url> | sh` works too), `tar` and `sha256sum`, and a systemd user session for the autostart. Building from a checkout needs a Rust toolchain at `rust-version` (1.95) or newer: rustup, or the distro's `cargo` where it's that new.
+
+Everything `install.sh` writes is under your home, so it never touches `/usr`. `install-npu-reset.sh` writes only to `/etc/systemd/system` and `/etc/polkit-1/rules.d`, and runs `/usr/sbin/modprobe`, which is where Fedora, Debian/Ubuntu, Arch and openSUSE all have it.
+
+## Immutable distros
+
+On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the `curl | sh` install; nothing needs layering with `rpm-ostree` or `transactional-update`. `sudo ./install-npu-reset.sh` works too, since `/etc` is writable on all of them.
+
+To build from source there, build in a toolbox (or distrobox) and install from the host, where `systemctl --user` reaches your session:
+
+```sh
+toolbox run cargo build --release --locked   # after: toolbox run sudo dnf install cargo
+./install.sh                                  # no cargo on the host: installs target/release/vinowatch
+```
+
 ## How it works
 
 - **Which processes.** A process is listed if it has a `libopenvino*` file mapped (`/proc/<pid>/maps`), or `openvino` in its name. Names are matched on the file name only. Apps are told apart by command line, because the Python ones all show up as `python3`; vinoPop is recognised by its checkout path, in the command line or the working directory.
