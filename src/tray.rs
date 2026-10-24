@@ -340,6 +340,25 @@ impl ksni::Tray for WatchTray {
         }
     }
 
+    // Called when spawn finds no StatusNotifierWatcher, or the host goes away.
+    // Keep running: sway and Hyprland start waybar alongside the session, not
+    // before it, and exiting here trips the unit's restart limit.
+    fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        let why = match reason {
+            ksni::OfflineReason::Error(e) => e.to_string(),
+            _ => "the tray host went away".into(),
+        };
+        eprintln!(
+            "vinowatch: no tray host ({why}); the icon shows once one starts \
+             (GNOME needs the AppIndicator extension)"
+        );
+        true
+    }
+
+    fn watcher_online(&self) {
+        eprintln!("vinowatch: a tray host started; the icon is back");
+    }
+
     fn attention_icon_name(&self) -> String {
         State::LowMemory.icon_name().into()
     }
@@ -532,7 +551,8 @@ async fn notify(driver: &Driver) {
         .await;
 }
 
-/// Runs until the tray is quit. Errors if no tray host is on the session bus.
+/// Runs until the tray is quit. Errors if there is no session bus; with no
+/// tray host on it yet, it waits for one.
 pub fn run(
     interval: Duration,
     warn_below: u8,
@@ -547,6 +567,7 @@ pub fn run(
         sampler.poll();
         let (jobs, mut queue) = unbounded_channel();
         let handle = WatchTray::new(probe_python, Some(jobs))
+            .assume_sni_available(true)
             .spawn()
             .await
             .map_err(|e| format!("couldn't register the tray icon: {e}"))?;

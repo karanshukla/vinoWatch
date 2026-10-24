@@ -12,7 +12,7 @@ A small tray daemon that shows what the OpenVINO apps on your machine cost: CPU,
 
 Anything else that loads `libopenvino*` is listed too, just without an app name.
 
-Hover the tray icon for the NPU load, a process count and how much RAM the OpenVINO apps hold against what the machine has free; click it for one row per process. Each row has its own little meter icon: the NPU row fills with the NPU load, the RAM row with how full RAM is, and a process row shows that process's CPU (full is one core), RAM (full is a fifth of the machine's) and whether it holds the NPU. A row is white while that thing idles, green while it works, and amber for the process holding a fifth of RAM or more, or the biggest one while RAM is low. The icon is three meters in the vino apps' style: green while an OpenVINO app runs or the NPU is busy, and amber if available RAM drops under 15% of the total (`--warn-below PERCENT` changes that, `0` turns it off). Once the NPU has been idle for 5 minutes it goes passive, as vinoWhisper's does, so Plasma tucks it under the expander and Waybar hides it; NPU load brings it back. Apps left running with the NPU idle don't keep it in view, a stuck driver does. It only changes the icon and tooltip: no popups (the one notification is the answer to a driver check you asked for), and nothing is ever stopped for you. The tray needs a StatusNotifierItem host: KDE Plasma and Waybar have one, GNOME needs the AppIndicator extension.
+Hover the tray icon for the NPU load, a process count and how much RAM the OpenVINO apps hold against what the machine has free; click it for one row per process. Each row has its own little meter icon: the NPU row fills with the NPU load, the RAM row with how full RAM is, and a process row shows that process's CPU (full is one core), RAM (full is a fifth of the machine's) and whether it holds the NPU. A row is white while that thing idles, green while it works, and amber for the process holding a fifth of RAM or more, or the biggest one while RAM is low. The icon is three meters in the vino apps' style: green while an OpenVINO app runs or the NPU is busy, and amber if available RAM drops under 15% of the total (`--warn-below PERCENT` changes that, `0` turns it off). Once the NPU has been idle for 5 minutes it goes passive, as vinoWhisper's does, so Plasma tucks it under the expander and Waybar hides it; NPU load brings it back. Apps left running with the NPU idle don't keep it in view, a stuck driver does. It only changes the icon and tooltip: no popups (the one notification is the answer to a driver check you asked for), and nothing is ever stopped for you. The tray needs a StatusNotifierItem host; see [Desktops](#desktops).
 
 ## Stuck NPU driver
 
@@ -36,6 +36,28 @@ curl -fsSL https://raw.githubusercontent.com/karanshukla/vinoWatch/main/install.
 ```
 
 This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin`, its icons in `~/.local/share/icons/hicolor`, and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes both.
+
+## Desktops
+
+The tray is a StatusNotifierItem, and the unit starts with `graphical-session.target`.
+
+| Desktop | Tray host | Starts at login |
+|---|---|---|
+| KDE Plasma | built in | yes |
+| GNOME | the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) (Ubuntu ships it on) | yes |
+| COSMIC | built in | yes |
+| sway, Hyprland | Waybar's `tray` module | with uwsm or sway-systemd; otherwise see below |
+
+sway and Hyprland only start `graphical-session.target` through a session wrapper: [uwsm](https://github.com/Vladimir-csp/uwsm), or Fedora's `sway-systemd`. Without one, start the unit from the compositor's config:
+
+```
+exec systemctl --user start vinowatch.service             # sway
+exec-once = systemctl --user start vinowatch.service      # Hyprland
+```
+
+`install.sh` prints the right line when it's run in such a session. If you start the compositor with `dbus-run-session`, its session bus isn't the one systemd's user units see; run `exec vinowatch` instead.
+
+If vinoWatch starts before the panel does, it waits for a tray host instead of exiting. The driver check's notification needs a notification daemon (mako, dunst, swaync on wlroots); without one the result still shows in the menu and tooltip.
 
 ## Console
 

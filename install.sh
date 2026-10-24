@@ -105,8 +105,22 @@ if systemctl --user daemon-reload 2>/dev/null; then
     # Only start it when a graphical session is up; otherwise it starts at the next login.
     if systemctl --user is-active --quiet graphical-session.target; then
         systemctl --user restart vinowatch.service
+        echo "Installed. The tray starts with your graphical session."
+    elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        # A Wayland session that never starts graphical-session.target: sway or
+        # Hyprland launched without uwsm or sway-systemd. The unit's WantedBy
+        # never fires there, so start it now and say how to make it stick.
+        systemctl --user restart vinowatch.service
+        echo "Installed and started. Your session doesn't start graphical-session.target,"
+        echo "so add this to your compositor's config to start the tray at each login:"
+        case "${XDG_CURRENT_DESKTOP:-}" in
+            *Hyprland*) echo "  exec-once = systemctl --user start vinowatch.service" ;;
+            *sway*) echo "  exec systemctl --user start vinowatch.service" ;;
+            *) echo "  systemctl --user start vinowatch.service" ;;
+        esac
+    else
+        echo "Installed. The tray starts with your graphical session."
     fi
-    echo "Installed. The tray starts with your graphical session."
 else
     echo "Installed $bin. No systemd user session here, so run vinowatch yourself."
 fi
