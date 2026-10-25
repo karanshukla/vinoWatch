@@ -119,7 +119,6 @@ jobs:
           tool: cargo-llvm-cov
       # Unit tests plus tests/cli.rs, whose runs of the binary count too.
       - run: cargo llvm-cov --locked --no-report
-      - run: cargo llvm-cov --locked --bins --summary-only # TEMP baseline: unit tests only
       - run: cargo llvm-cov report --lcov --output-path lcov.info
       - name: Summary
         run: |
