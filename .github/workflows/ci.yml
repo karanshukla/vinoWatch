@@ -97,7 +97,7 @@ jobs:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: .github/package-release.sh
-      - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user
       - name: Smoke-test the tarballs
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
@@ -119,6 +119,7 @@ jobs:
           tool: cargo-llvm-cov
       # Unit tests plus tests/cli.rs, whose runs of the binary count too.
       - run: cargo llvm-cov --locked --no-report
+      - run: cargo llvm-cov --locked --bins --summary-only # TEMP baseline: unit tests only
       - run: cargo llvm-cov report --lcov --output-path lcov.info
       - name: Summary
         run: |
@@ -134,4 +135,4 @@ jobs:
           if-no-files-found: error
       # A few points under what CI measured when this was set. Raise it as
       # tests land; don't lower it to get a PR through.
-      - run: cargo llvm-cov report --fail-under-lines 50
+      - run: cargo llvm-cov report --fail-under-lines 88

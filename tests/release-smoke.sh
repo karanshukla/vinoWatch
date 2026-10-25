@@ -31,8 +31,10 @@ for arch in x86_64 aarch64; do
     if [ "$arch" = "$(uname -m)" ]; then
         run="$dir/vinowatch"
     else
-        command -v "qemu-$arch-static" >/dev/null || { echo "no qemu-$arch-static" >&2; exit 1; }
-        run="qemu-$arch-static $dir/vinowatch"
+        # Ubuntu's qemu-user is static and drops the -static suffix.
+        qemu=$(command -v "qemu-$arch-static" || command -v "qemu-$arch") ||
+            { echo "no qemu-$arch" >&2; exit 1; }
+        run="$qemu $dir/vinowatch"
     fi
     got=$($run --version)
     [ "$got" = "vinowatch $version" ] || { echo "$arch: '$got', wanted 'vinowatch $version'" >&2; exit 1; }

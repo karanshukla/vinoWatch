@@ -44,7 +44,7 @@ jobs:
         run: |
           .github/package-release.sh
           cp notes.md dist/
-      - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user
       - name: Smoke-test the tarballs
         run: tests/release-smoke.sh dist "${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
