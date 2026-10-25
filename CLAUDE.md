@@ -26,7 +26,12 @@ cargo fmt --check
 cargo deny check
 ```
 
-CI runs those, plus `shellcheck` on both install scripts, `systemd-analyze verify` on both units and a `cargo +1.95 check` against `rust-version` (sysinfo sets that floor; raise both together).
+CI runs those, plus `shellcheck` on every script, `systemd-analyze verify` on both units, a `cargo +1.95 check` against `rust-version` (sysinfo sets that floor; raise both together), and:
+
+- `tests/install-e2e.sh`: install.sh's download path against a fake `curl` and `systemctl` on `PATH` and a throwaway `HOME`. Needs a tray build (`cargo build`), or the icon checks fail.
+- `tests/polkit-rule.js`: the reset rule against fake polkit requests (`node`).
+- `release-build`: `.github/package-release.sh` (shared with `release.yml`), then `tests/release-smoke.sh` runs each tarball's binary, aarch64 under qemu-user.
+- `coverage`: `cargo llvm-cov` with a line floor; lcov is an artifact, the summary is on the run page.
 
 ## Gotchas
 

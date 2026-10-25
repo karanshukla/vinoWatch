@@ -728,4 +728,19 @@ mod tests {
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// `install.sh --uninstall` lists the icons by hand; a new one added
+    /// here and not there would be left behind.
+    #[test]
+    fn install_sh_uninstalls_every_icon() {
+        let script = include_str!("../install.sh");
+        let uninstall = &script[script.find("--uninstall\" ]").expect("uninstall branch")..];
+        let uninstall = &uninstall[..uninstall.find("exit 0").unwrap()];
+        for (name, _) in files() {
+            assert!(
+                uninstall.contains(&format!("\"$hicolor/{name}\"")),
+                "install.sh --uninstall doesn't remove {name}"
+            );
+        }
+    }
 }

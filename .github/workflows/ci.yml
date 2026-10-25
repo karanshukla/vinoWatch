@@ -59,8 +59,79 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: shellcheck install.sh install-npu-reset.sh
+      - run: shellcheck install.sh install-npu-reset.sh tests/*.sh .github/*.sh
+      # The reset rule's logic against fake polkit requests.
+      - run: node tests/polkit-rule.js
       # verify wants ExecStart to exist, so stand in for the installed binary.
       - run: install -D /bin/true ~/.local/bin/vinowatch
       - run: systemd-analyze --user verify vinowatch.service
       - run: systemd-analyze verify ./vino-npu-reset.service
+
+  # install.sh's release download end to end: checksum refusals,
+  # VINOWATCH_VERSION, the release-archive branch and --uninstall, against a
+  # fake curl serving a local release (see the script).
+  install-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --locked
+      - run: tests/install-e2e.sh target/debug/vinowatch
+
+  # What release.yml builds, on every PR: the static musl x86_64 and aarch64
+  # tarballs, then each binary run (aarch64 under qemu-user). Without this
+  # an aarch64-only or musl link failure first shows up on a tag.
+  release-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: .github/package-release.sh
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - name: Smoke-test the tarballs
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          tests/release-smoke.sh dist "$version"
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-llvm-cov
+      # Unit tests plus tests/cli.rs, whose runs of the binary count too.
+      - run: cargo llvm-cov --locked --no-report
+      - run: cargo llvm-cov report --lcov --output-path lcov.info
+      - name: Summary
+        run: |
+          {
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: error
+      # A few points under what CI measured when this was set. Raise it as
+      # tests land; don't lower it to get a PR through.
+      - run: cargo llvm-cov report --fail-under-lines 50

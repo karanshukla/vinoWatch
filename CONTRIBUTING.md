@@ -23,6 +23,10 @@ cargo test
 cargo deny check
 ```
 
+If you touched `install.sh`, also run `cargo build && tests/install-e2e.sh target/debug/vinowatch` (no network, no real `$HOME`). CI also builds the release tarballs on every PR and runs them, and fails if line coverage (`cargo llvm-cov`) drops under the floor in `ci.yml`.
+
+- `tests/cli.rs` holds the binary's contract with scripts (exit codes, `--json` shape). Change it when you change those, and say so in the changelog.
+
 - A change to how processes are found or named needs a test with a fake `/proc` entry (see `src/detect.rs`).
 - A change that can only be verified on an NPU: say so in the PR instead of faking a test.
 - Keep code comments to the *why*, one or two lines. Measured claims carry a date.
