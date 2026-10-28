@@ -60,6 +60,27 @@ pub fn classify(cmdline: &[String], cwd: Option<&str>) -> Option<Project> {
         .map(|&(_, project)| project)
 }
 
+/// Which project the program itself is, from file names only: argv[0], or for
+/// an interpreter the script it runs (argv[1]) or its `-m` module. So a vino
+/// app's helpers that never load OpenVINO (vinoWhisper's tray, settings window
+/// and idle dictation child) count toward it, while `pytest`, `uv run` or an
+/// editor with a vino path among its arguments or as its cwd don't.
+pub fn program_project(cmdline: &[String]) -> Option<Project> {
+    let file_name = |arg: &String| arg.rsplit('/').next().unwrap_or_default().to_owned();
+    let program = file_name(cmdline.first()?);
+    let mut names = vec![program.clone()];
+    if program.starts_with("python") {
+        match cmdline.get(1).map(String::as_str) {
+            Some("-m") => names.extend(cmdline.get(2).cloned()),
+            Some(arg) if !arg.starts_with('-') => names.push(file_name(&arg.to_owned())),
+            _ => {}
+        }
+    }
+    names
+        .iter()
+        .find_map(|name| classify(std::slice::from_ref(name), None))
+}
+
 /// Whether a `/proc/<pid>/maps` listing maps an OpenVINO library.
 ///
 /// Only the file name counts, so a data file that happens to have
@@ -247,6 +268,54 @@ mod tests {
             classify(&argv, Some("/home/dev/workspace/vinoPop")),
             Some(Project::VinoPop)
         );
+    }
+
+    #[test]
+    fn a_projects_own_programs_are_named_by_file_name_only() {
+        let cmd = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        for (args, project) in [
+            (
+                &["/home/k/.local/bin/vinowhisper-tray", "--hidden"][..],
+                Some(Project::VinoWhisper),
+            ),
+            (
+                &["/home/k/.local/bin/vinowhisper-gui"],
+                Some(Project::VinoWhisper),
+            ),
+            (
+                &[
+                    "/home/k/Development/vinoWhisper/.venv/bin/python",
+                    "/home/k/.local/bin/vinowhisper-dictate",
+                    "--json",
+                ],
+                Some(Project::VinoWhisper),
+            ),
+            (
+                &["python3", "-m", "vinowhisper.server"],
+                Some(Project::VinoWhisper),
+            ),
+            (
+                &["python3", "/home/k/Development/vinoPop/vinopop"],
+                Some(Project::VinoPop),
+            ),
+            // Paths and arguments are not the program.
+            (
+                &["/home/k/Development/vinoWhisper/.venv/bin/pytest", "-q"],
+                None,
+            ),
+            (&["uv", "run", "vinowhisper-caption"], None),
+            (&["kwrite", "/home/k/notes/vinowhisper.txt"], None),
+            (&["sudo", "vinoauthface", "enroll"], None),
+            (
+                &[
+                    "python3",
+                    "/home/k/Development/vinoWhisper/scripts/cleanup_eval.py",
+                ],
+                None,
+            ),
+        ] {
+            assert_eq!(program_project(&cmd(args)), project, "{args:?}");
+        }
     }
 
     #[test]
