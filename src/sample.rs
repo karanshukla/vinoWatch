@@ -111,14 +111,17 @@ impl Sampler {
                     return None;
                 }
                 let by_name = name.to_lowercase().contains("openvino");
+                // A project's own program counts even with no OpenVINO mapped, so
+                // its helpers' RAM shows. Its program, not its arguments, so
+                // `sudo vinoauthface enroll` lists the child and not sudo. Only
+                // pids the proc root has, so a fake root in tests stays hermetic.
+                let own_program = || {
+                    detect::program_project(&cmdline).is_some()
+                        && self.proc_root.join(pid.to_string()).exists()
+                };
                 let listed = by_name
-                    || match detect::uses_openvino(&self.proc_root, pid) {
-                        Some(mapped) => mapped,
-                        // Can't look inside: trust the executable's own name,
-                        // not its arguments, so `sudo vinoauthface enroll`
-                        // lists the child and not sudo.
-                        None => detect::classify(&cmdline[..1], None).is_some(),
-                    };
+                    || detect::uses_openvino(&self.proc_root, pid) == Some(true)
+                    || own_program();
                 if !listed {
                     return None;
                 }
