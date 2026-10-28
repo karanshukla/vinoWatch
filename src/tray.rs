@@ -530,7 +530,7 @@ async fn notify(driver: &Driver) {
     let Ok(bus) = zbus::Connection::session().await else {
         return;
     };
-    let hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
+    let hints: HashMap<&str, zbus::Variant> = HashMap::new();
     let _ = bus
         .call_method(
             Some("org.freedesktop.Notifications"),
