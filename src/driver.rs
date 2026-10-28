@@ -9,7 +9,9 @@
 //! `install-npu-reset.sh` installs, with a polkit rule that lets the active
 //! local user start it.
 
+use std::fs;
 use std::io::Read;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -128,12 +130,56 @@ pub fn python_of(cmdline: &[String]) -> Option<PathBuf> {
 }
 
 /// `--probe-python` if given, else the newest interpreter seen running an
-/// OpenVINO app that still exists, else `python3` from `PATH`.
+/// OpenVINO app that still exists and only we or root can change, else
+/// `python3` from `PATH`.
 pub fn pick_python(explicit: Option<&Path>, seen: &[PathBuf]) -> PathBuf {
+    // /proc/<pid> belongs to the process's effective uid and gid.
+    let me = fs::metadata("/proc/self").map(|m| (m.uid(), m.gid()));
     explicit
         .map(Path::to_path_buf)
-        .or_else(|| seen.iter().rev().find(|p| p.is_file()).cloned())
+        .or_else(|| {
+            let me = me.ok()?;
+            seen.iter()
+                .rev()
+                .find(|p| p.is_file() && trusted(p, me))
+                .cloned()
+        })
         .unwrap_or_else(|| "python3".into())
+}
+
+/// Whether nobody but us and root could have put `python` there. A venv's
+/// interpreter is a symlink to the system one, but Python reads `pyvenv.cfg`
+/// and `site-packages` from next to the link, so the link's directories count
+/// as much as the file it points at.
+fn trusted(python: &Path, me: (u32, u32)) -> bool {
+    let Ok(target) = python.canonicalize() else {
+        return false;
+    };
+    [python, &target]
+        .iter()
+        .all(|p| p.ancestors().all(|dir| safe_owner(dir, me)))
+}
+
+/// Owned by us or root, and not writable by anyone else. Group-writable is
+/// fine for our own group: Fedora's `umask 002` makes that the default for
+/// a user's files, with a group of their own.
+fn safe_owner(path: &Path, (uid, gid): (u32, u32)) -> bool {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.uid() != uid && meta.uid() != 0 {
+        return false;
+    }
+    // A symlink's own mode is always 0777 and means nothing.
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    let mode = meta.permissions().mode();
+    // Like /tmp: others can add entries, but not replace ours.
+    if meta.is_dir() && mode & 0o1000 != 0 {
+        return true;
+    }
+    (mode & 0o020 == 0 || meta.gid() == gid) && mode & 0o002 == 0
 }
 
 /// Whether `install-npu-reset.sh` has been run.
@@ -235,5 +281,57 @@ mod tests {
         );
         assert_eq!(pick_python(None, &[sh.clone(), gone.clone()]), sh);
         assert_eq!(pick_python(None, &[gone]), PathBuf::from("python3"));
+    }
+
+    /// Another user's venv, or one anyone can write to, would run their code
+    /// as us when the tray checks the driver.
+    #[test]
+    fn an_interpreter_others_can_change_is_refused() {
+        let root = std::env::temp_dir().join(format!("vinowatch-trust-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let bin = root.join("venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let chmod =
+            |p: &Path, mode| fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+        chmod(&root, 0o755);
+        chmod(&root.join("venv"), 0o755);
+        chmod(&bin, 0o755);
+        let python = bin.join("python3");
+        fs::write(&python, "").unwrap();
+        chmod(&python, 0o755);
+        let seen = std::slice::from_ref(&python);
+        assert_eq!(pick_python(None, seen), python);
+
+        chmod(&python, 0o757);
+        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
+        chmod(&python, 0o755);
+
+        // Anyone could swap the file, or drop a pyvenv.cfg next to it.
+        chmod(&bin, 0o777);
+        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
+        chmod(&bin, 0o755);
+        chmod(&root.join("venv"), 0o757);
+        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
+        chmod(&root.join("venv"), 0o755);
+
+        // The usual venv shape: a link to a root-owned interpreter.
+        fs::remove_file(&python).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", &python).unwrap();
+        assert_eq!(pick_python(None, seen), python);
+        // A link into a directory anyone can write to.
+        let open = root.join("open");
+        fs::create_dir_all(&open).unwrap();
+        chmod(&open, 0o777);
+        fs::write(open.join("python3"), "").unwrap();
+        chmod(&open.join("python3"), 0o755);
+        fs::remove_file(&python).unwrap();
+        std::os::unix::fs::symlink(open.join("python3"), &python).unwrap();
+        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
+
+        // Root's files, and an explicit --probe-python, are taken as given.
+        let sh = PathBuf::from("/bin/sh");
+        assert_eq!(pick_python(None, std::slice::from_ref(&sh)), sh);
+        assert_eq!(pick_python(Some(&python), &[]), python);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

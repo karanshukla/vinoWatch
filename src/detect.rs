@@ -119,6 +119,14 @@ pub fn holds_npu(proc_root: &Path, pid: u32) -> bool {
         .any(|fd| fs::read_link(fd.path()).is_ok_and(|target| target.starts_with("/dev/accel")))
 }
 
+/// The real and effective uid of `pid`, from the `Uid:` line of `status`.
+pub fn uids(proc_root: &Path, pid: u32) -> Option<(u32, u32)> {
+    let text = fs::read_to_string(proc_root.join(format!("{pid}/status"))).ok()?;
+    let line = text.lines().find_map(|l| l.strip_prefix("Uid:"))?;
+    let mut ids = line.split_whitespace().map(|n| n.parse().ok());
+    Some((ids.next()??, ids.next()??))
+}
+
 /// Proportional set size in bytes: resident memory with each shared page
 /// divided among the processes sharing it, so figures from several processes
 /// can be added up. `None` when `smaps_rollup` can't be read.
@@ -433,6 +441,23 @@ mod tests {
         assert_eq!(meminfo(&root), Some((8_000_000 * 1024, 2_000_000 * 1024)));
         fs::remove_file(root.join("meminfo")).unwrap();
         assert_eq!(meminfo(&root), None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reads_the_real_and_effective_uid() {
+        let root = std::env::temp_dir().join(format!("vinowatch-uid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("7")).unwrap();
+        fs::write(
+            root.join("7/status"),
+            "Name:\tpython3\nUid:\t1001\t0\t1001\t1001\nGid:\t1001\t1001\t1001\t1001\n",
+        )
+        .unwrap();
+        assert_eq!(uids(&root, 7), Some((1001, 0)));
+        fs::write(root.join("7/status"), "Name:\tpython3\nUid:\t1001\n").unwrap();
+        assert_eq!(uids(&root, 7), None);
+        assert_eq!(uids(&root, 8), None);
         fs::remove_dir_all(&root).unwrap();
     }
 }

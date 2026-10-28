@@ -1,5 +1,6 @@
 //! One poll of the machine: which processes use OpenVINO, and the NPU load.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -52,6 +53,8 @@ pub struct Sampler {
     accel_root: PathBuf,
     cgroup_root: PathBuf,
     warn_below_percent: u8,
+    /// Ours, to tell which processes' interpreters we may run.
+    uid: Option<u32>,
 }
 
 impl Sampler {
@@ -69,6 +72,8 @@ impl Sampler {
             accel_root,
             cgroup_root: "/sys/fs/cgroup".into(),
             warn_below_percent: 0,
+            // /proc/<pid> belongs to the process's effective uid.
+            uid: std::fs::metadata("/proc/self").ok().map(|m| m.uid()),
         }
     }
 
@@ -120,7 +125,15 @@ impl Sampler {
                 if !listed {
                     return None;
                 }
-                pythons.extend(driver::python_of(&cmdline));
+                // argv[0] is whatever the process's owner chose. Running
+                // another user's would run their code as us, so only offer
+                // interpreters from our own processes.
+                let ours = detect::uids(&self.proc_root, pid).is_some_and(|(real, effective)| {
+                    Some(real) == self.uid && Some(effective) == self.uid
+                });
+                if ours {
+                    pythons.extend(driver::python_of(&cmdline));
+                }
                 let cwd = p.cwd().map(Path::to_string_lossy);
                 let pss = detect::pss_bytes(&self.proc_root, pid);
                 Some(Proc {
@@ -471,6 +484,65 @@ mod tests {
         assert!(!snap.cgroup_limited);
         assert_eq!(snap.mem, Some((8_000_000 << 10, 6_000_000 << 10)));
         assert!(!snap.low_memory);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Another user can start anything with `argv[0]` set to a path named
+    /// `python3`; the probe would then run their program as us.
+    #[test]
+    fn only_our_own_processes_offer_an_interpreter() {
+        use std::os::unix::process::CommandExt;
+        let fake_python = PathBuf::from("/tmp/vinowhisper/python3");
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg0(&fake_python)
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        // Until the exec, the child's command line is still ours.
+        let cmdline = format!("/proc/{pid}/cmdline");
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !std::fs::read(&cmdline).is_ok_and(|c| c.starts_with(b"/tmp/vinowhisper/python3\0")) {
+            assert!(Instant::now() < deadline, "sleep never started");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let root = std::env::temp_dir().join(format!("vinowatch-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(format!("{pid}/fd"))).unwrap();
+        std::fs::write(
+            root.join(format!("{pid}/maps")),
+            "a-b r-xp 0 fd:01 1 /x/libopenvino.so\n",
+        )
+        .unwrap();
+        let me = Sampler::with_roots(root.clone(), root.clone()).uid.unwrap();
+        let other = me.wrapping_add(1);
+        for (real, effective, offered) in [
+            (other, other, false),
+            (me, other, false),
+            (other, me, false),
+            (me, me, true),
+        ] {
+            std::fs::write(
+                root.join(format!("{pid}/status")),
+                format!("Name:\tsleep\nUid:\t{real}\t{effective}\t{effective}\t{effective}\n"),
+            )
+            .unwrap();
+            let snap = Sampler::with_roots(root.clone(), root.join("no-accel")).poll();
+            assert!(snap.procs.iter().any(|p| p.pid == pid), "listed either way");
+            assert_eq!(
+                snap.pythons.contains(&fake_python),
+                offered,
+                "uid {real}/{effective}"
+            );
+        }
+        // No status to read: not offered.
+        std::fs::remove_file(root.join(format!("{pid}/status"))).unwrap();
+        let snap = Sampler::with_roots(root.clone(), root.join("no-accel")).poll();
+        assert!(snap.pythons.is_empty());
+
+        let _ = child.kill();
+        let _ = child.wait();
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
