@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
+### Added
+
+- The vino apps' own programs are listed even when they don't load OpenVINO, so vinoWhisper's tray, settings window and dictation child show up (and their RAM counts) while its server has idled out. A process counts when its program (or a Python's script or `-m` module) names a vino app; directories, arguments and the working directory don't, so pytest in a checkout stays out. With one of these resident the tray shows the app as running.
+
+### Changed
+
+- The tray waits for a tray host instead of exiting, so it comes up on sway and Hyprland and no longer burns its restarts racing Waybar to the bus. install.sh starts it in a Wayland session without `graphical-session.target` and prints the autostart line for your compositor.
+- install.sh falls back to wget when there's no curl. On image-based hosts (Fedora Atomic, Aeon) with no cargo it installs an existing toolbox build, or says how to get one. The README has Distros, Immutable distros and Desktops sections.
+- zbus 6.
+
+### Fixed
+
+- "Check NPU driver" and `--check-npu` only probe with Python interpreters from our own processes that nobody but us or root can change. Another local user could set a process's argv[0] to their own script and have the next check run it as us.
+
 ## [0.3.0] - 2026-10-23
 
 ### Changed
