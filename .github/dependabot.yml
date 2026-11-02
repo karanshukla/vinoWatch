@@ -15,6 +15,11 @@ updates:
       cargo:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    # zbus follows ksni's major version (Cargo.toml says why); bump both
+    # together by hand once ksni moves.
+    ignore:
+      - dependency-name: zbus
+        update-types: ["version-update:semver-major"]
 
   # Actions stay pinned to commit SHAs; Dependabot bumps the SHA and the
   # version comment together.
