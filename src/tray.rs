@@ -145,6 +145,9 @@ struct WatchTray {
     npu_used: Instant,
     /// `HIDE_AFTER` has passed since `npu_used`.
     npu_quiet: bool,
+    /// Send the themed `-symbolic` icon names. Off for hosts that draw them
+    /// without recolouring (see `host_recolours`), which then get the pixmaps.
+    themed_icons: bool,
 }
 
 impl WatchTray {
@@ -157,6 +160,7 @@ impl WatchTray {
             jobs,
             npu_used: Instant::now(),
             npu_quiet: false,
+            themed_icons: true,
         }
     }
 
@@ -301,6 +305,50 @@ fn pixmaps(state: State) -> Vec<ksni::Icon> {
     all[i].clone()
 }
 
+/// The spec lets a tooltip's description carry markup, and XFCE, Cinnamon,
+/// MATE, Budgie and Plasma parse it as such: a `<` in a driver error or a
+/// process name would otherwise cut the tooltip short.
+fn markup_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Tray hosts that draw a themed `-symbolic` icon as the SVG has it instead of
+/// in the panel's text colour, by the watcher's process name (`comm`, cut to
+/// 15 characters). The glyph is near-black, and these panels are usually dark.
+const NO_RECOLOUR_HOSTS: &[&str] = &[
+    "lxqt-panel",
+    "mate-panel",
+    // mate-panel's notification area when it runs out of process.
+    "notification-ar",
+    "swaybar",
+];
+
+/// Whether the tray host recolours `-symbolic` icons. `watcher` is the process
+/// name owning `org.kde.StatusNotifierWatcher`, `desktop` is
+/// `XDG_CURRENT_DESKTOP`; the desktop covers a watcher we couldn't name.
+fn host_recolours(watcher: Option<&str>, desktop: Option<&str>) -> bool {
+    if watcher.is_some_and(|name| NO_RECOLOUR_HOSTS.contains(&name.trim())) {
+        return false;
+    }
+    let desktop = desktop.unwrap_or_default();
+    watcher.is_some() || !desktop.split(':').any(|d| d == "LXQt" || d == "MATE")
+}
+
+/// The process name of whoever owns the tray watcher now, with its unique bus
+/// name so a change of host is noticed.
+async fn watcher_host(dbus: &zbus::fdo::DBusProxy<'_>) -> Option<(String, Option<String>)> {
+    let name = zbus::names::BusName::try_from("org.kde.StatusNotifierWatcher").ok()?;
+    let owner = dbus.get_name_owner(name).await.ok()?;
+    let pid = dbus
+        .get_connection_unix_process_id(owner.as_ref().into())
+        .await
+        .ok();
+    let comm = pid.and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok());
+    Some((owner.to_string(), comm))
+}
+
 /// ksni treats "_" as an access-key marker and hides it; a doubled one is a
 /// literal underscore. Process names like `vino_speak` have them.
 fn menu_text(label: &str) -> String {
@@ -325,6 +373,9 @@ impl ksni::Tray for WatchTray {
     }
 
     fn icon_name(&self) -> String {
+        if !self.themed_icons {
+            return String::new();
+        }
         self.state().icon_name().into()
     }
 
@@ -368,6 +419,9 @@ impl ksni::Tray for WatchTray {
     }
 
     fn attention_icon_name(&self) -> String {
+        if !self.themed_icons {
+            return String::new();
+        }
         State::LowMemory.icon_name().into()
     }
 
@@ -385,6 +439,7 @@ impl ksni::Tray for WatchTray {
             ]
             .into_iter()
             .flatten()
+            .map(|line| markup_escape(&line))
             .collect::<Vec<_>>()
             .join("\n"),
             ..Default::default()
@@ -579,11 +634,29 @@ pub fn run(
             .spawn()
             .await
             .map_err(|e| format!("couldn't register the tray icon: {e}"))?;
+        let bus = zbus::Connection::session().await.ok();
+        let dbus = match &bus {
+            Some(bus) => zbus::fdo::DBusProxy::new(bus).await.ok(),
+            None => None,
+        };
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
+        // The unique name of the watcher's owner last time; None until a tray
+        // host is up. Asked every poll: a host can be replaced at any time.
+        let mut host = None;
         let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = ticks.tick() => {
+                    if let Some(dbus) = &dbus {
+                        let now = watcher_host(dbus).await;
+                        if now.as_ref().map(|(owner, _)| owner) != host.as_ref() {
+                            let comm = now.as_ref().and_then(|(_, comm)| comm.as_deref());
+                            let themed = host_recolours(comm, desktop.as_deref());
+                            handle.update(|tray| tray.themed_icons = themed).await;
+                            host = now.map(|(owner, _)| owner);
+                        }
+                    }
                     let snap = sampler.poll();
                     if handle.update(|tray| tray.set_snapshot(snap)).await.is_none() {
                         return Err("the tray icon went away".into());
@@ -608,6 +681,29 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tooltip_text_is_escaped() {
+        assert_eq!(markup_escape("a <b> & c"), "a &lt;b&gt; &amp; c");
+    }
+
+    #[test]
+    fn hosts_that_dont_recolour_get_pixmaps() {
+        assert!(host_recolours(Some("waybar\n"), None));
+        assert!(host_recolours(Some("plasmashell"), Some("KDE")));
+        assert!(!host_recolours(Some("swaybar\n"), Some("sway")));
+        assert!(!host_recolours(Some("lxqt-panel"), None));
+        assert!(!host_recolours(Some("notification-ar"), None));
+        // No name for the watcher: go by the desktop.
+        assert!(!host_recolours(None, Some("X-Ubuntu:MATE")));
+        assert!(host_recolours(None, Some("XFCE")));
+        assert!(host_recolours(None, None));
+        let mut tray = WatchTray::new(None, None);
+        tray.themed_icons = false;
+        assert_eq!(ksni::Tray::icon_name(&tray), "");
+        assert_eq!(ksni::Tray::attention_icon_name(&tray), "");
+        assert!(!ksni::Tray::icon_pixmap(&tray).is_empty());
+    }
 
     #[test]
     fn menu_labels_keep_their_underscores() {
