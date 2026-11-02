@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-02
+
+### Fixed
+
+- A vino app's helper on its own (vinoWhisper's or vinoAuthFace's tray, say) no longer turns the tray icon green. Only processes that load OpenVINO, or NPU load, do. Helpers stay listed and in the RAM total, marked `helper` (`"openvino": false` in `--json`), and the tooltip counts them apart from the OpenVINO processes.
+- One zbus in the binary again: back on zbus 5, the version ksni uses, instead of carrying zbus 5 and 6 side by side.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added
