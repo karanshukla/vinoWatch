@@ -23,6 +23,10 @@ pub struct Proc {
     pub ram_is_pss: bool,
     /// Has an `/dev/accel` node open, so it is the one talking to the NPU.
     pub npu_open: bool,
+    /// Maps OpenVINO or has it in its name. False for a vino app's helper
+    /// listed by program name alone (its tray, say); true when its maps can't
+    /// be read, since then we can't tell.
+    pub openvino: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -119,12 +123,11 @@ impl Sampler {
                     detect::program_project(&cmdline).is_some()
                         && self.proc_root.join(pid.to_string()).exists()
                 };
-                let listed = by_name
-                    || detect::uses_openvino(&self.proc_root, pid) == Some(true)
-                    || own_program();
-                if !listed {
+                let maps = detect::uses_openvino(&self.proc_root, pid);
+                if !(by_name || maps == Some(true) || own_program()) {
                     return None;
                 }
+                let openvino = by_name || maps != Some(false);
                 // argv[0] is whatever the process's owner chose. Running
                 // another user's would run their code as us, so only offer
                 // interpreters from our own processes.
@@ -144,6 +147,7 @@ impl Sampler {
                     name,
                     cpu_percent: p.cpu_usage(),
                     npu_open: detect::holds_npu(&self.proc_root, pid),
+                    openvino,
                 })
             })
             .collect();
@@ -209,7 +213,7 @@ impl Snapshot {
                     None => "null".into(),
                 };
                 format!(
-                    "{{\"pid\":{},\"name\":{},\"project\":{},\"cpu_percent\":{:.1},\"ram_mib\":{},\"ram_kind\":\"{}\",\"npu_open\":{}}}",
+                    "{{\"pid\":{},\"name\":{},\"project\":{},\"cpu_percent\":{:.1},\"ram_mib\":{},\"ram_kind\":\"{}\",\"npu_open\":{},\"openvino\":{}}}",
                     p.pid,
                     json_string(&p.name),
                     project,
@@ -217,6 +221,7 @@ impl Snapshot {
                     p.ram_bytes / (1024 * 1024),
                     if p.ram_is_pss { "pss" } else { "rss" },
                     p.npu_open,
+                    p.openvino,
                 )
             })
             .collect();
@@ -280,8 +285,9 @@ impl Proc {
             None => self.name.clone(),
         };
         let npu = if self.npu_open { ", NPU open" } else { "" };
+        let helper = if self.openvino { "" } else { ", helper" };
         format!(
-            "{who} pid {}: CPU {:.1}%, RAM {} MiB{npu}",
+            "{who} pid {}: CPU {:.1}%, RAM {} MiB{npu}{helper}",
             self.pid,
             self.cpu_percent,
             self.ram_bytes / (1024 * 1024),
@@ -325,6 +331,7 @@ mod tests {
                 ram_bytes: 812 * 1024 * 1024,
                 ram_is_pss: true,
                 npu_open: true,
+                openvino: true,
             }],
             mem: Some((8192 * 1024 * 1024, 2048 * 1024 * 1024)),
             cgroup_limited: false,
@@ -333,7 +340,7 @@ mod tests {
         };
         assert_eq!(
             snap.to_json(),
-            r#"{"npu_percent":37.2,"ram_openvino_mib":812,"ram_total_mib":8192,"ram_available_mib":2048,"ram_limit":"host","low_memory":false,"processes":[{"pid":4242,"name":"python3","project":"vinoWhisper","cpu_percent":12.5,"ram_mib":812,"ram_kind":"pss","npu_open":true}]}"#
+            r#"{"npu_percent":37.2,"ram_openvino_mib":812,"ram_total_mib":8192,"ram_available_mib":2048,"ram_limit":"host","low_memory":false,"processes":[{"pid":4242,"name":"python3","project":"vinoWhisper","cpu_percent":12.5,"ram_mib":812,"ram_kind":"pss","npu_open":true,"openvino":true}]}"#
         );
         assert_eq!(
             Snapshot::default().to_json(),
@@ -351,8 +358,14 @@ mod tests {
             ram_bytes: 0,
             ram_is_pss: false,
             npu_open: false,
+            openvino: true,
         };
         assert_eq!(p.label(), "x pid 1: CPU 0.0%, RAM 0 MiB");
+        let helper = Proc {
+            openvino: false,
+            ..p
+        };
+        assert_eq!(helper.label(), "x pid 1: CPU 0.0%, RAM 0 MiB, helper");
         assert_eq!(Snapshot::default().npu_label(), "NPU unavailable");
     }
 
@@ -380,6 +393,7 @@ mod tests {
             .find(|p| p.pid == pid)
             .expect("own pid listed");
         assert!(!me.npu_open);
+        assert!(me.openvino);
         assert_eq!(snap.procs.len(), 1);
         assert_eq!(snap.npu_percent, None);
         assert!(!snap.npu_present);
@@ -399,6 +413,7 @@ mod tests {
                 ram_bytes: 1536 * 1024 * 1024,
                 ram_is_pss: true,
                 npu_open: false,
+                openvino: true,
             }],
             mem: Some((8 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024)),
             ..Default::default()

@@ -198,18 +198,26 @@ impl WatchTray {
     }
 
     fn summary(&self) -> String {
-        let apps = self.snap.procs.len();
+        let apps = self.snap.procs.iter().filter(|p| p.openvino).count();
+        let helpers = self.snap.procs.len() - apps;
+        let helpers = match helpers {
+            0 => String::new(),
+            1 => " + 1 helper".into(),
+            n => format!(" + {n} helpers"),
+        };
         format!(
-            "{} · {apps} OpenVINO process{}",
+            "{} · {apps} OpenVINO process{}{helpers}",
             self.snap.npu_label(),
             if apps == 1 { "" } else { "es" }
         )
     }
 
-    /// Something is running on OpenVINO: a listed process, or NPU load from
-    /// one we couldn't list (another user's, or gone before the poll saw it).
+    /// Something is running on OpenVINO: a listed process that loads it, or
+    /// NPU load from one we couldn't list (another user's, or gone before the
+    /// poll saw it). A vino app's helper alone (its tray, say) doesn't count.
     fn in_use(&self) -> bool {
-        !self.snap.procs.is_empty() || self.snap.npu_percent.is_some_and(|p| p >= NPU_BUSY_PERCENT)
+        self.snap.procs.iter().any(|p| p.openvino)
+            || self.snap.npu_percent.is_some_and(|p| p >= NPU_BUSY_PERCENT)
     }
 
     /// The NPU meter: green while it's busy.
@@ -619,8 +627,17 @@ mod tests {
             ram_bytes: 0,
             ram_is_pss: true,
             npu_open: false,
+            openvino: true,
         });
         assert_eq!(tray.state(), State::Active);
+        // A vino app's helper with no OpenVINO mapped is listed, not active.
+        tray.snap.procs[0].openvino = false;
+        assert_eq!(tray.state(), State::Idle);
+        assert!(
+            tray.summary()
+                .ends_with("· 0 OpenVINO processes + 1 helper")
+        );
+        tray.snap.procs[0].openvino = true;
         tray.snap.low_memory = true;
         assert_eq!(tray.state(), State::LowMemory);
         // NPU load from a process we couldn't list still counts.
@@ -644,6 +661,7 @@ mod tests {
             ram_bytes,
             ram_is_pss: true,
             npu_open,
+            openvino: true,
         };
         let mut tray = WatchTray::new(None, None);
         tray.snap.mem = Some((16 * GIB, 8 * GIB));
@@ -678,6 +696,7 @@ mod tests {
             ram_bytes: 0,
             ram_is_pss: true,
             npu_open: true,
+            openvino: true,
         });
         tray.driver = Driver::Checked {
             verdict: Verdict::Stuck,
@@ -729,6 +748,7 @@ mod tests {
             ram_bytes: 1,
             ram_is_pss: true,
             npu_open: true,
+            openvino: true,
         };
         tray.snap.procs.push(app.clone());
         assert_eq!(tray.status(), ksni::Status::Passive);
@@ -803,6 +823,7 @@ mod tests {
             ram_bytes: 0,
             ram_is_pss: true,
             npu_open: true,
+            openvino: true,
         });
         assert_eq!(enabled(&tray), Some(false));
         let items = texts(tray.driver_items(true));
@@ -880,6 +901,7 @@ mod tests {
             ram_bytes: 512 * 1024 * 1024,
             ram_is_pss: true,
             npu_open,
+            openvino: true,
         }
     }
 
