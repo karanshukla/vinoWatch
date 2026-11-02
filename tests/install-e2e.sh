@@ -95,6 +95,31 @@ set -e
 left=$(find "$home" -type f)
 [ -z "$left" ] || fail "uninstall left: $left"
 
+# An X11 session whose manager never starts graphical-session.target (XFCE,
+# MATE, LXQt): started now, and an XDG autostart entry for the next login.
+# This systemctl works, except that the target isn't active.
+mkdir -p "$work/sdbin"
+cat > "$work/sdbin/systemctl" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$HOME/systemctl.log"
+case "$*" in *is-active*) exit 3 ;; esac
+exit 0
+EOF
+chmod +x "$work/sdbin/systemctl"
+run PATH="$work/sdbin:$work/fakebin:/usr/bin:/bin" DISPLAY=:0
+[ "$status" -eq 0 ] || fail "X11 session: exit $status: $(cat "$work/out")"
+entry="$home/.config/autostart/vinowatch.desktop"
+grep -qx 'Exec=systemctl --user start vinowatch.service' "$entry" || fail "no autostart entry"
+grep -qx 'X-systemd-skip=true' "$entry" || fail "autostart entry not skipped by systemd"
+grep -qx -- '--user restart vinowatch.service' "$home/systemctl.log" || fail "X11 session: not started"
+grep -q "starts at each login" "$work/out" || fail "X11 session message: $(cat "$work/out")"
+set +e
+env -i PATH="$work/sdbin:$work/fakebin:/usr/bin:/bin" HOME="$home" sh "$repo/install.sh" --uninstall > "$work/out" 2>&1
+set -e
+rm -f "$home/systemctl.log"
+left=$(find "$home" -type f)
+[ -z "$left" ] || fail "uninstall left: $left"
+
 # A version picks that release, with or without the v.
 run VINOWATCH_VERSION=0.3.0
 [ "$status" -eq 0 ] || fail "VINOWATCH_VERSION=0.3.0: exit $status"
