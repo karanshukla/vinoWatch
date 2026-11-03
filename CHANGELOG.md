@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-03
+
+### Added
+
+- install.sh writes an XDG autostart entry, so the tray starts at login on XFCE, LXQt, MATE, Budgie and Cinnamon before 6.8, which never start `graphical-session.target`. In an X11 session without that target it also starts the tray straight away. `--uninstall` removes the entry.
+- The README's Desktops table covers XFCE, Cinnamon, MATE, LXQt and Budgie: which tray host, what a left click does, whether the idle icon hides.
+
+### Fixed
+
+- On LXQt, MATE and swaybar the tray icon was a near-black glyph on a usually dark panel, because those hosts don't recolour symbolic icons. They now get vinoWatch's own light icons.
+- The tooltip is escaped as markup, so a `<` or `&` in a driver error or process name no longer cuts it short on XFCE, Cinnamon, MATE, Budgie and Plasma.
+
 ## [0.4.1] - 2026-11-02
 
 ### Fixed
