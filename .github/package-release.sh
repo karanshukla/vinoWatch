@@ -18,4 +18,6 @@ for arch in x86_64 aarch64; do
     tar -czf "dist/vinowatch-$arch-linux.tar.gz" -C dist vinowatch
 done
 rm -rf dist/vinowatch
-(cd dist && sha256sum vinowatch-*-linux.tar.gz > SHA256SUMS)
+# On its own too, for releases/latest/download/install.sh.
+cp install.sh dist/
+(cd dist && sha256sum vinowatch-*-linux.tar.gz install.sh > SHA256SUMS)

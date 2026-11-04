@@ -15,6 +15,8 @@ mod raster;
 mod sample;
 #[cfg(feature = "tray")]
 mod tray;
+#[cfg(feature = "tray")]
+mod update;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

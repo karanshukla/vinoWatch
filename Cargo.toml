@@ -20,7 +20,7 @@ tray = ["dep:ksni", "dep:tokio", "dep:zbus", "dep:vino-ui"]
 [dependencies]
 ksni = { version = "0.3.6", optional = true }
 # The vinoPilot apps and the tray menu icons every vinoPilot tray shares; no egui.
-vino-ui = { package = "vino-user-interface", version = "0.2.5", default-features = false, optional = true }
+vino-ui = { package = "vino-user-interface", version = "0.2.6", default-features = false, optional = true }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 tokio = { version = "1.53.1", optional = true, features = ["rt", "macros", "time", "sync"] }
 # Already in the tree through ksni, with the same features; used for the

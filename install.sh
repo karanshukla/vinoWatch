@@ -6,13 +6,16 @@
 # From a checkout it builds from source. Anywhere else, e.g. piped from curl,
 # it downloads the latest release, or the one VINOWATCH_VERSION names
 # (e.g. VINOWATCH_VERSION=v0.1.0):
-#   curl -fsSL https://raw.githubusercontent.com/karanshukla/vinoWatch/main/install.sh | sh
+#   curl -fsSL https://github.com/karanshukla/vinoWatch/releases/latest/download/install.sh | sh
+# It also installs itself as vinowatch-upgrade, which the tray's "Update to
+# vN" runs (VINOWATCH_VERSION=vN vinowatch-upgrade does the same by hand).
 # On Fedora Atomic and other image-based distros, build in a toolbox and run
 # this on the host: it reuses target/release/vinowatch when cargo isn't here.
 set -eu
 
 repo="karanshukla/vinoWatch"
 bin="$HOME/.local/bin/vinowatch"
+upgrade="$HOME/.local/bin/vinowatch-upgrade"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/vinowatch.desktop"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -20,7 +23,7 @@ hicolor="$data_dir/icons/hicolor"
 
 if [ "${1:-}" = "--uninstall" ]; then
     systemctl --user disable --now vinowatch.service 2>/dev/null || true
-    rm -f "$bin" "$unit_dir/vinowatch.service" "$autostart" \
+    rm -f "$bin" "$upgrade" "$unit_dir/vinowatch.service" "$autostart" \
         "$hicolor/scalable/apps/vinowatch.svg" \
         "$hicolor/symbolic/apps/vinowatch-symbolic.svg" \
         "$hicolor/symbolic/apps/vinowatch-active-symbolic.svg" \
@@ -116,6 +119,9 @@ fi
 # running tray keeps its old inode until the restart below.
 install -Dm755 "$built" "$bin"
 install -Dm644 "$here/vinowatch.service" "$unit_dir/vinowatch.service"
+# This script again, as the tray's "Update to vN": run with VINOWATCH_VERSION
+# set, from ~/.local/bin, it takes the download path above.
+install -Dm755 "$here/install.sh" "$upgrade"
 # The tray draws its own icons too, so a build without this flag (an older
 # release, or --no-default-features) still shows one.
 if ! "$bin" --install-icons "$data_dir" >/dev/null 2>&1; then

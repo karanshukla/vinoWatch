@@ -53,6 +53,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/SHA256SUMS
+            dist/install.sh
             dist/notes.md
           if-no-files-found: error
 
@@ -70,4 +71,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file dist/notes.md dist/*.tar.gz dist/SHA256SUMS
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file dist/notes.md dist/*.tar.gz dist/install.sh dist/SHA256SUMS

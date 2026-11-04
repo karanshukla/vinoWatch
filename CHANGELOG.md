@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- "Check for updates" in the tray menu, under the version. Nothing goes online until you click it; then it offers "Update to vN", which installs that release and restarts the tray. The tray's unit still allows Unix sockets only: the check and the install go through `systemd-run --user`, outside it.
+- install.sh installs itself as `vinowatch-upgrade`, which the menu item runs, and every release also attaches install.sh on its own (`releases/latest/download/install.sh`).
+
 ## [0.4.2] - 2026-11-03
 
 ### Added
