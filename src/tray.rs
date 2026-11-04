@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use ksni::menu::{MenuItem, StandardItem};
+use ksni::menu::{MenuItem, StandardItem, SubMenu};
 use ksni::{Category, ToolTip, TrayMethods};
 
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use vino_ui::family::{self, App};
+use vino_ui::tray::{APPS_MENU, MenuIcon};
 
 use crate::driver::{self, Verdict};
 use crate::icon::{self, State};
@@ -65,20 +67,20 @@ impl Driver {
 
     fn icon_name(&self) -> &'static str {
         match self {
-            Driver::Unchecked | Driver::Checking | Driver::Resetting => "view-refresh",
+            Driver::Unchecked | Driver::Checking | Driver::Resetting => MenuIcon::Refresh.name(),
             Driver::Checked {
                 verdict: Verdict::Healthy,
                 ..
-            } => "emblem-success",
+            } => MenuIcon::Ok.name(),
             Driver::Checked {
                 verdict: Verdict::Stuck,
                 ..
-            } => "dialog-warning",
+            } => MenuIcon::Warning.name(),
             Driver::Checked {
                 verdict: Verdict::Unknown(_),
                 ..
-            } => "dialog-question",
-            Driver::ResetFailed(_) => "dialog-error",
+            } => MenuIcon::Question.name(),
+            Driver::ResetFailed(_) => MenuIcon::Error.name(),
         }
     }
 
@@ -478,10 +480,11 @@ impl ksni::Tray for WatchTray {
             format!("vinoWatch {}", env!("CARGO_PKG_VERSION")),
             RowIcon::Named("vinowatch"),
         ));
+        items.push(apps_menu());
         items.push(
             StandardItem {
                 label: "Quit".into(),
-                icon_name: "application-exit".into(),
+                icon_name: MenuIcon::Quit.name().into(),
                 activate: Box::new(|_: &mut Self| std::process::exit(0)),
                 ..Default::default()
             }
@@ -498,7 +501,7 @@ impl WatchTray {
         let mut items: Vec<MenuItem<Self>> = vec![
             StandardItem {
                 label: "Check NPU driver".into(),
-                icon_name: "system-search".into(),
+                icon_name: MenuIcon::Search.name().into(),
                 enabled: !busy,
                 activate: Box::new(|tray: &mut Self| tray.start(Job::Check)),
                 ..Default::default()
@@ -509,7 +512,7 @@ impl WatchTray {
             if self.driver.stuck() {
                 items.push(note(
                     "Reset needs: sudo ./install-npu-reset.sh".into(),
-                    RowIcon::Named("dialog-information"),
+                    RowIcon::Named(MenuIcon::Info.name()),
                 ));
             }
             return items;
@@ -518,7 +521,7 @@ impl WatchTray {
         items.push(
             StandardItem {
                 label: "Reset NPU driver".into(),
-                icon_name: "view-refresh".into(),
+                icon_name: MenuIcon::Refresh.name().into(),
                 // Nothing is stopped for you; the reset waits for them.
                 enabled: !busy && holders.is_empty(),
                 activate: Box::new(|tray: &mut Self| tray.start(Job::Reset)),
@@ -529,12 +532,50 @@ impl WatchTray {
         if !holders.is_empty() {
             items.push(note(
                 "Close these first:".into(),
-                RowIcon::Named("dialog-warning"),
+                RowIcon::Named(MenuIcon::Warning.name()),
             ));
             items.extend(self.holders().map(|p| note(p.label(), self.proc_icon(p))));
         }
         items
     }
+}
+
+/// vinopilot.ca and the other vinoPilot apps, the same submenu every
+/// vinoPilot tray ends with.
+fn apps_menu() -> MenuItem<WatchTray> {
+    let link = |label: String, url: &'static str, icon: &str| -> MenuItem<WatchTray> {
+        StandardItem {
+            label: menu_text(&label),
+            icon_name: icon.into(),
+            activate: Box::new(move |_: &mut WatchTray| {
+                if let Err(e) = family::open(url) {
+                    eprintln!("vinowatch: couldn't open {url}: {e}");
+                }
+            }),
+            ..Default::default()
+        }
+        .into()
+    };
+    let mut submenu = vec![
+        link(
+            family::SITE_LABEL.into(),
+            family::SITE,
+            MenuIcon::Website.name(),
+        ),
+        MenuItem::Separator,
+    ];
+    submenu.extend(
+        App::Watch
+            .others()
+            .map(|app| link(app.name().into(), app.page(), "")),
+    );
+    SubMenu {
+        label: APPS_MENU.into(),
+        icon_name: MenuIcon::Apps.name().into(),
+        submenu,
+        ..Default::default()
+    }
+    .into()
 }
 
 enum RowIcon {
@@ -681,6 +722,28 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_menu_ends_with_the_other_apps_then_quit() {
+        let menu = ksni::Tray::menu(&WatchTray::new(None, None));
+        let [.., MenuItem::SubMenu(apps), MenuItem::Standard(quit)] = menu.as_slice() else {
+            panic!("the menu should end with a submenu, then Quit");
+        };
+        assert_eq!(apps.label, APPS_MENU);
+        assert_eq!(apps.icon_name, MenuIcon::Apps.name());
+        assert_eq!(quit.label, "Quit");
+        let labels: Vec<&str> = apps
+            .submenu
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Standard(item) => Some(item.label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels[0], family::SITE_LABEL);
+        assert_eq!(labels.len(), App::ALL.len());
+        assert!(!labels.contains(&"vinoWatch"));
+    }
 
     #[test]
     fn tooltip_text_is_escaped() {

@@ -659,12 +659,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vino-user-interface"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afcf90f156d20a32f35f5330f2d4f86cea2ad3aaeb6caf1c302c622e83841d0f"
+
+[[package]]
 name = "vinowatch"
 version = "0.4.2"
 dependencies = [
  "ksni",
  "sysinfo",
  "tokio",
+ "vino-user-interface",
  "zbus",
 ]
 
