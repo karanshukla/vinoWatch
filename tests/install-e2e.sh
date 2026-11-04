@@ -79,6 +79,8 @@ run
 [ "$status" -eq 0 ] || fail "good release: exit $status: $(cat "$work/out")"
 "$home/.local/bin/vinowatch" --version | grep -q '^vinowatch ' || fail "installed binary doesn't run"
 [ -f "$home/.config/systemd/user/vinowatch.service" ] || fail "no unit installed"
+# The tray's "Update to vN" runs this copy.
+[ -x "$home/.local/bin/vinowatch-upgrade" ] || fail "no vinowatch-upgrade installed"
 for icon in $icons; do
     [ -f "$home/.local/share/icons/hicolor/$icon" ] || fail "no $icon"
 done

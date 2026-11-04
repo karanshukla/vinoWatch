@@ -15,6 +15,7 @@ use vino_ui::tray::{APPS_MENU, MenuIcon};
 use crate::driver::{self, Verdict};
 use crate::icon::{self, State};
 use crate::sample::{Proc, Sampler, Snapshot};
+use crate::update::{self, Found};
 
 /// Below this the NPU counts as idle; the busy counter ticks a little even
 /// between inferences.
@@ -28,12 +29,45 @@ const HIDE_AFTER: Duration = Duration::from_secs(5 * 60);
 /// 16 GiB machine. Its RAM meter is full here.
 const HEAVY_RAM_SHARE: f64 = 0.2;
 
-/// The menu's driver actions, run off the tray's thread: the probe takes up
-/// to a minute and the reload waits for `modprobe`.
+/// The menu's actions that run off the tray's thread: the driver probe takes
+/// up to a minute, the reload waits for `modprobe`, and the update ones go to
+/// the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Job {
     Check,
     Reset,
+    CheckUpdate,
+    /// The release `Update::Available` names.
+    InstallUpdate,
+}
+
+/// Where "Check for updates" is. Nothing goes online until it is clicked.
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Update {
+    #[default]
+    Unchecked,
+    Checking,
+    UpToDate,
+    Available(String),
+    Installing(String),
+    Failed(String),
+}
+
+impl Update {
+    fn busy(&self) -> bool {
+        matches!(self, Update::Checking | Update::Installing(_))
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Update::Unchecked => "Check for updates".into(),
+            Update::Checking => "Checking for updates…".into(),
+            Update::UpToDate => "Up to date: check again".into(),
+            Update::Available(tag) => format!("Update to {tag}"),
+            Update::Installing(tag) => format!("Installing {tag}…"),
+            Update::Failed(why) => format!("Update failed ({}): try again", clip(why)),
+        }
+    }
 }
 
 /// Where the stuck-driver check is. Nothing runs until it is asked for.
@@ -143,6 +177,7 @@ struct WatchTray {
     /// needs an interpreter with openvino.
     seen_pythons: Vec<PathBuf>,
     jobs: Option<UnboundedSender<Job>>,
+    update: Update,
     /// The last poll with the NPU busy, or startup.
     npu_used: Instant,
     /// `HIDE_AFTER` has passed since `npu_used`.
@@ -160,6 +195,7 @@ impl WatchTray {
             probe_python,
             seen_pythons: Vec::new(),
             jobs,
+            update: Update::default(),
             npu_used: Instant::now(),
             npu_quiet: false,
             themed_icons: true,
@@ -186,16 +222,60 @@ impl WatchTray {
         driver::pick_python(self.probe_python.as_deref(), &self.seen_pythons)
     }
 
-    /// Starts `job` unless one is already running.
+    /// Starts `job` unless one of its kind is already running.
     fn start(&mut self, job: Job) {
         let Some(jobs) = &self.jobs else { return };
-        if self.driver.busy() || jobs.send(job).is_err() {
+        let busy = match job {
+            Job::Check | Job::Reset => self.driver.busy(),
+            Job::CheckUpdate | Job::InstallUpdate => self.update.busy(),
+        };
+        if busy {
             return;
         }
-        self.driver = match job {
-            Job::Check => Driver::Checking,
-            Job::Reset => Driver::Resetting,
+        if job == Job::InstallUpdate && !matches!(self.update, Update::Available(_)) {
+            return;
+        }
+        if jobs.send(job).is_err() {
+            return;
+        }
+        match job {
+            Job::Check => self.driver = Driver::Checking,
+            Job::Reset => self.driver = Driver::Resetting,
+            Job::CheckUpdate => self.update = Update::Checking,
+            Job::InstallUpdate => {
+                if let Update::Available(tag) = &self.update {
+                    self.update = Update::Installing(tag.clone());
+                }
+            }
+        }
+    }
+
+    /// The update row under the version. Without `vinowatch-upgrade` (a build
+    /// installed by hand) a newer release opens its page instead.
+    fn update_item(&self, can_install: bool) -> MenuItem<Self> {
+        let activate: Box<dyn Fn(&mut Self) + Send> = match &self.update {
+            Update::Available(tag) if !can_install => {
+                let url = format!(
+                    "https://github.com/{}/releases/tag/{tag}",
+                    App::Watch.repo()
+                );
+                Box::new(move |_: &mut Self| {
+                    if let Err(e) = family::open(&url) {
+                        eprintln!("vinowatch: couldn't open {url}: {e}");
+                    }
+                })
+            }
+            Update::Available(_) => Box::new(|tray: &mut Self| tray.start(Job::InstallUpdate)),
+            _ => Box::new(|tray: &mut Self| tray.start(Job::CheckUpdate)),
         };
+        StandardItem {
+            label: menu_text(&self.update.label()),
+            icon_name: MenuIcon::Update.name().into(),
+            enabled: !self.update.busy(),
+            activate,
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Processes with `/dev/accel` open: `modprobe -r` refuses while any do.
@@ -480,6 +560,7 @@ impl ksni::Tray for WatchTray {
             format!("vinoWatch {}", env!("CARGO_PKG_VERSION")),
             RowIcon::Named("vinowatch"),
         ));
+        items.push(self.update_item(update::upgrade_command().is_some()));
         items.push(apps_menu());
         items.push(
             StandardItem {
@@ -601,10 +682,46 @@ fn note(label: String, icon: RowIcon) -> MenuItem<WatchTray> {
     .into()
 }
 
+/// Runs an update job and returns where the update row is afterwards.
+async fn run_update(job: Job, handle: &ksni::Handle<WatchTray>) -> Update {
+    match job {
+        Job::CheckUpdate => {
+            let found = tokio::task::spawn_blocking(|| update::check(env!("CARGO_PKG_VERSION")))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            match found {
+                Ok(Found::UpToDate) => Update::UpToDate,
+                Ok(Found::Newer(tag)) => Update::Available(tag),
+                Err(why) => Update::Failed(why),
+            }
+        }
+        _ => {
+            let tag = handle
+                .update(|tray| match &tray.update {
+                    Update::Installing(tag) => Some(tag.clone()),
+                    _ => None,
+                })
+                .await
+                .flatten();
+            let (Some(tag), Some(upgrade)) = (tag, update::upgrade_command()) else {
+                return Update::Failed("no vinowatch-upgrade".into());
+            };
+            let failed_tag = tag.clone();
+            // Success restarts the tray, which ends this process on the new
+            // binary; returning at all means it didn't happen.
+            match tokio::task::spawn_blocking(move || update::install(&upgrade, &tag)).await {
+                Ok(Err(why)) => Update::Failed(why),
+                Ok(Ok(())) => Update::Available(failed_tag),
+                Err(e) => Update::Failed(e.to_string()),
+            }
+        }
+    }
+}
+
 /// Runs one job and returns where the driver is afterwards.
 async fn run_job(job: Job, python: PathBuf, handle: &ksni::Handle<WatchTray>) -> Driver {
     let after_reset = match job {
-        Job::Check => false,
+        Job::Check | Job::CheckUpdate | Job::InstallUpdate => false,
         Job::Reset => {
             let reset = tokio::task::spawn_blocking(driver::reset)
                 .await
@@ -704,6 +821,14 @@ pub fn run(
                     }
                 }
                 Some(job) = queue.recv() => {
+                    if matches!(job, Job::CheckUpdate | Job::InstallUpdate) {
+                        let handle = handle.clone();
+                        tokio::spawn(async move {
+                            let update = run_update(job, &handle).await;
+                            handle.update(|tray| tray.update = update).await;
+                        });
+                        continue;
+                    }
                     let Some(python) = handle.update(|tray| tray.python()).await else {
                         return Err("the tray icon went away".into());
                     };
@@ -926,6 +1051,69 @@ mod tests {
     fn labels(tray: &WatchTray) -> Vec<String> {
         use ksni::Tray;
         texts(tray.menu())
+    }
+
+    fn update_label(tray: &WatchTray, can_install: bool) -> (String, bool) {
+        match tray.update_item(can_install) {
+            MenuItem::Standard(item) => (item.label, item.enabled),
+            _ => panic!("the update row isn't a plain item"),
+        }
+    }
+
+    #[test]
+    fn the_update_row_says_where_it_is() {
+        let mut tray = WatchTray::new(None, None);
+        assert_eq!(
+            update_label(&tray, true),
+            ("Check for updates".into(), true)
+        );
+        assert!(labels(&tray).contains(&"Check for updates".to_string()));
+        tray.update = Update::Checking;
+        assert_eq!(
+            update_label(&tray, true),
+            ("Checking for updates…".into(), false)
+        );
+        tray.update = Update::Available("v0.5.0".into());
+        assert_eq!(update_label(&tray, true), ("Update to v0.5.0".into(), true));
+        // A build installed by hand still hears about it, and opens the page.
+        assert_eq!(
+            update_label(&tray, false),
+            ("Update to v0.5.0".into(), true)
+        );
+        tray.update = Update::Installing("v0.5.0".into());
+        assert_eq!(
+            update_label(&tray, true),
+            ("Installing v0.5.0…".into(), false)
+        );
+        tray.update = Update::Failed("couldn't reach GitHub".into());
+        assert_eq!(
+            update_label(&tray, true),
+            (
+                "Update failed (couldn't reach GitHub): try again".into(),
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn update_jobs_start_one_at_a_time_and_only_for_a_release() {
+        let (jobs, mut queue) = unbounded_channel();
+        let mut tray = WatchTray::new(None, Some(jobs));
+        // Nothing to install yet.
+        tray.start(Job::InstallUpdate);
+        assert!(queue.try_recv().is_err());
+        tray.start(Job::CheckUpdate);
+        tray.start(Job::CheckUpdate);
+        assert_eq!(queue.try_recv(), Ok(Job::CheckUpdate));
+        assert!(queue.try_recv().is_err(), "a second check while one runs");
+        assert_eq!(tray.update, Update::Checking);
+        // A driver check isn't held up by it.
+        tray.start(Job::Check);
+        assert_eq!(queue.try_recv(), Ok(Job::Check));
+        tray.update = Update::Available("v0.5.0".into());
+        tray.start(Job::InstallUpdate);
+        assert_eq!(queue.try_recv(), Ok(Job::InstallUpdate));
+        assert_eq!(tray.update, Update::Installing("v0.5.0".into()));
     }
 
     fn texts(items: Vec<MenuItem<WatchTray>>) -> Vec<String> {

@@ -37,6 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/karanshukla/vinoWatch/main/install.
 
 This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin`, its icons in `~/.local/share/icons/hicolor`, and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes both.
 
+To upgrade, use **Check for updates** in the tray menu, under the version: it asks GitHub only when you click it, then offers **Update to vN**, which installs that release the same way and restarts the tray. `VINOWATCH_VERSION=vN vinowatch-upgrade` does the same from a terminal.
+
 ## Desktops
 
 The tray is a StatusNotifierItem. The unit starts with `graphical-session.target`, and for sessions that never start that target, install.sh also writes an XDG autostart entry (`~/.config/autostart/vinowatch.desktop`) that starts the unit.
