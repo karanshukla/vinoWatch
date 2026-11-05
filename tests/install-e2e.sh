@@ -84,6 +84,11 @@ run
 for icon in $icons; do
     [ -f "$home/.local/share/icons/hicolor/$icon" ] || fail "no $icon"
 done
+# The root half of "Reset NPU driver", kept so nobody has to unpack the tarball.
+[ -x "$home/.local/share/vinowatch/install-npu-reset.sh" ] || fail "no install-npu-reset.sh kept"
+for f in vino-npu-reset.service vino-npu-reset.rules; do
+    cmp -s "$repo/$f" "$home/.local/share/vinowatch/$f" || fail "$f not kept beside it"
+done
 grep -qx "https://github.com/karanshukla/vinoWatch/releases/latest/download/$tarball" \
     "$work/release/urls" || fail "latest URL: $(cat "$work/release/urls")"
 grep -q "No systemd user session" "$work/out" || fail "no-session message missing"
@@ -96,6 +101,7 @@ set -e
 [ "$status" -eq 0 ] || fail "uninstall: exit $status"
 left=$(find "$home" -type f)
 [ -z "$left" ] || fail "uninstall left: $left"
+[ ! -e "$home/.local/share/vinowatch" ] || fail "uninstall left ~/.local/share/vinowatch"
 
 # An X11 session whose manager never starts graphical-session.target (XFCE,
 # MATE, LXQt): started now, and an XDG autostart entry for the next login.

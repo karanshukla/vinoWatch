@@ -20,6 +20,9 @@ unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/vinowatch.desktop"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 hicolor="$data_dir/icons/hicolor"
+# The root half of "Reset NPU driver", kept from the release so it can be
+# set up later without unpacking the tarball by hand.
+npu_reset="$data_dir/vinowatch"
 
 if [ "${1:-}" = "--uninstall" ]; then
     systemctl --user disable --now vinowatch.service 2>/dev/null || true
@@ -27,9 +30,18 @@ if [ "${1:-}" = "--uninstall" ]; then
         "$hicolor/scalable/apps/vinowatch.svg" \
         "$hicolor/symbolic/apps/vinowatch-symbolic.svg" \
         "$hicolor/symbolic/apps/vinowatch-active-symbolic.svg" \
-        "$hicolor/symbolic/apps/vinowatch-low-memory-symbolic.svg"
+        "$hicolor/symbolic/apps/vinowatch-low-memory-symbolic.svg" \
+        "$npu_reset/install-npu-reset.sh" "$npu_reset/vino-npu-reset.service" \
+        "$npu_reset/vino-npu-reset.rules"
+    rmdir "$npu_reset" 2>/dev/null || true
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed vinoWatch."
+    # The root half lives in /etc, out of this script's reach.
+    if [ -f /etc/systemd/system/vino-npu-reset.service ]; then
+        echo "The NPU reset unit is still installed. To remove it:"
+        echo "  sudo rm -f /etc/systemd/system/vino-npu-reset.service /etc/polkit-1/rules.d/50-vino-npu-reset.rules"
+        echo "  sudo systemctl daemon-reload"
+    fi
     exit 0
 fi
 
@@ -127,6 +139,15 @@ if [ -f "$here/Cargo.toml" ]; then
     rm -f "$upgrade"
 else
     install -Dm755 "$here/install.sh" "$upgrade"
+fi
+# install-npu-reset.sh needs its unit and rule beside it. All three come from
+# the checkout or the tarball checked against SHA256SUMS above; 0.1.0 had
+# none of them.
+if [ -f "$here/install-npu-reset.sh" ] && [ -f "$here/vino-npu-reset.service" ] &&
+    [ -f "$here/vino-npu-reset.rules" ]; then
+    install -Dm755 "$here/install-npu-reset.sh" "$npu_reset/install-npu-reset.sh"
+    install -Dm644 "$here/vino-npu-reset.service" "$npu_reset/vino-npu-reset.service"
+    install -Dm644 "$here/vino-npu-reset.rules" "$npu_reset/vino-npu-reset.rules"
 fi
 # The tray draws its own icons too, so a build without this flag (an older
 # release, or --no-default-features) still shows one.
