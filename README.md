@@ -109,6 +109,12 @@ toolbox run cargo build --release --locked   # after: toolbox run sudo dnf insta
 ./install.sh                                  # no cargo on the host: installs target/release/vinowatch
 ```
 
+On openSUSE Aeon and Kalpa there's no toolbox: use distrobox with a Tumbleweed image (`distrobox create -i registry.opensuse.org/opensuse/tumbleweed`), then `distrobox enter -- sudo zypper install cargo` and build with `distrobox enter -- cargo build --release --locked`.
+
+GNOME needs the AppIndicator extension for the tray, and stock Silverblue and Aeon don't ship it. Installing it per user from [extensions.gnome.org](https://extensions.gnome.org/extension/615/appindicator-support/) works with no layering; Bluefin ships it.
+
+`install-npu-reset.sh` can't install on SteamOS, since an update resets `/etc`. That doesn't matter there: Steam Deck hardware has no NPU. On NixOS `/etc` is read-only and there's no `/usr/sbin/modprobe`, so the script stops and says so; declare the unit in `configuration.nix` instead.
+
 ## How it works
 
 - **Which processes.** A process is listed if it has a `libopenvino*` file mapped (`/proc/<pid>/maps`), or `openvino` in its name, or if it is one of the vino apps' own programs, so helpers that never load OpenVINO count toward their app: vinoWhisper's tray, settings window and idle dictation process, vinoAuthFace's tray. Those are marked `helper` (`"openvino": false` in `--json`), add to the RAM total, and don't turn the icon green or count as OpenVINO processes in the tooltip. A program is its executable's file name, or for Python the script's file name or `-m` module; directories, arguments and the working directory don't count, so `pytest` in a vino checkout or an editor opening a vino file isn't listed. Names are matched on the file name only. Apps are told apart by command line, because the Python ones all show up as `python3`; vinoPop is recognised by its checkout path, in the command line or the working directory.
