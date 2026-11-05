@@ -120,8 +120,14 @@ fi
 install -Dm755 "$built" "$bin"
 install -Dm644 "$here/vinowatch.service" "$unit_dir/vinowatch.service"
 # This script again, as the tray's "Update to vN": run with VINOWATCH_VERSION
-# set, from ~/.local/bin, it takes the download path above.
-install -Dm755 "$here/install.sh" "$upgrade"
+# set, from ~/.local/bin, it takes the download path above. Only from a
+# release: a build from a checkout keeps itself, and the tray links to the
+# release page instead. An older copy would put the release back over it.
+if [ -f "$here/Cargo.toml" ]; then
+    rm -f "$upgrade"
+else
+    install -Dm755 "$here/install.sh" "$upgrade"
+fi
 # The tray draws its own icons too, so a build without this flag (an older
 # release, or --no-default-features) still shows one.
 if ! "$bin" --install-icons "$data_dir" >/dev/null 2>&1; then
