@@ -11,6 +11,14 @@ set -eu
 unit=/etc/systemd/system/vino-npu-reset.service
 rule=/etc/polkit-1/rules.d/50-vino-npu-reset.rules
 
+# NixOS: /etc/systemd/system and /etc/polkit-1/rules.d are generated from the
+# store and read-only, and /usr/sbin/modprobe doesn't exist there.
+if [ -e /etc/NIXOS ] || grep -qx 'ID="\{0,1\}nixos"\{0,1\}' /etc/os-release 2>/dev/null; then
+    echo "This script can't install on NixOS: /etc is managed by the system configuration." >&2
+    echo "Declare the vino-npu-reset unit and its polkit rule in configuration.nix instead." >&2
+    exit 1
+fi
+
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run this as root: sudo $0 $*" >&2
     exit 1
