@@ -188,6 +188,20 @@ pub fn reset_installed() -> bool {
     Path::new(RESET_UNIT_PATH).is_file()
 }
 
+/// The command that installs the reset unit, at the copy install.sh keeps in
+/// `$XDG_DATA_HOME/vinowatch`. `xdg_data_home` is that variable: an absolute
+/// one is shown as is, anything else as install.sh's default, `~/.local/share`.
+#[cfg(feature = "tray")]
+pub fn reset_install_command(xdg_data_home: Option<&std::ffi::OsStr>) -> String {
+    match xdg_data_home.map(Path::new) {
+        Some(dir) if dir.is_absolute() => format!(
+            "sudo {}",
+            dir.join("vinowatch/install-npu-reset.sh").display()
+        ),
+        _ => "sudo ~/.local/share/vinowatch/install-npu-reset.sh".into(),
+    }
+}
+
 /// Starts the reload unit and waits for it. `modprobe -r` refuses while
 /// anything holds `/dev/accel`, so this fails rather than pull the NPU out
 /// from under a running app.
@@ -219,6 +233,22 @@ mod tests {
             &["-c", script],
             Duration::from_secs(10),
         )
+    }
+
+    #[cfg(feature = "tray")]
+    #[test]
+    fn the_reset_hint_points_at_install_shs_copy() {
+        use std::ffi::OsStr;
+        let default = "sudo ~/.local/share/vinowatch/install-npu-reset.sh";
+        assert_eq!(reset_install_command(None), default);
+        // install.sh's ${XDG_DATA_HOME:-...} treats empty as unset.
+        assert_eq!(reset_install_command(Some(OsStr::new(""))), default);
+        // A relative one isn't valid XDG; don't print a path that depends on cwd.
+        assert_eq!(reset_install_command(Some(OsStr::new("data"))), default);
+        assert_eq!(
+            reset_install_command(Some(OsStr::new("/home/k/.data"))),
+            "sudo /home/k/.data/vinowatch/install-npu-reset.sh"
+        );
     }
 
     #[test]

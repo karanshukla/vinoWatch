@@ -592,7 +592,10 @@ impl WatchTray {
         if !reset_installed {
             if self.driver.stuck() {
                 items.push(note(
-                    "Reset needs: sudo ./install-npu-reset.sh".into(),
+                    format!(
+                        "Reset needs: {}",
+                        driver::reset_install_command(std::env::var_os("XDG_DATA_HOME").as_deref())
+                    ),
                     RowIcon::Named(MenuIcon::Info.name()),
                 ));
             }
@@ -1146,12 +1149,15 @@ mod tests {
             verdict: Verdict::Stuck,
             after_reset: false,
         };
+        // The path depends on this machine's XDG_DATA_HOME; driver's tests
+        // cover each form.
+        let hint = format!(
+            "Reset needs: {}",
+            driver::reset_install_command(std::env::var_os("XDG_DATA_HOME").as_deref())
+        );
         assert_eq!(
             texts(tray.driver_items(false)),
-            [
-                "Check NPU driver",
-                "Reset needs: sudo ./install-npu-reset.sh"
-            ]
+            ["Check NPU driver", hint.as_str()]
         );
         let enabled = |tray: &WatchTray| {
             tray.driver_items(true)
