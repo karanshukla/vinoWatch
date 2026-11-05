@@ -23,9 +23,11 @@ With an NPU present the tray menu has **Check NPU driver**. It runs a ~0.3 s pro
 **Reset NPU driver** reloads it (`modprobe -r intel_vpu && modprobe intel_vpu`) through a root oneshot unit, and checks again afterwards. That needs a one-time root step, which `install.sh` doesn't do:
 
 ```sh
-sudo ./install-npu-reset.sh              # from a checkout or an unpacked release
-sudo ./install-npu-reset.sh --uninstall
+sudo ~/.local/share/vinowatch/install-npu-reset.sh
+sudo ~/.local/share/vinowatch/install-npu-reset.sh --uninstall
 ```
+
+`install.sh` keeps that script there, with the unit and rule it installs, from the same checked release (or checkout). `sudo ./install-npu-reset.sh` from a checkout or an unpacked release does the same.
 
 It installs `vino-npu-reset.service` and a polkit rule that lets the active local user start that unit, and nothing else, without a password. `modprobe -r` refuses while anything has `/dev/accel` open, so the item lists the apps holding the NPU and stays disabled until you close them. Nothing is stopped for you. Holders that belong to other users aren't visible; then the reset fails and says so.
 
@@ -35,7 +37,7 @@ It installs `vino-npu-reset.service` and a polkit rule that lets the active loca
 curl -fsSL https://github.com/karanshukla/vinoWatch/releases/latest/download/install.sh | sh
 ```
 
-This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin`, its icons in `~/.local/share/icons/hicolor`, and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes both.
+This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin`, its icons in `~/.local/share/icons/hicolor` and the NPU reset installer in `~/.local/share/vinowatch`, and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes all of it; run `install-npu-reset.sh --uninstall` first if you installed the reset unit.
 
 To upgrade, use **Check for updates** in the tray menu, under the version: it asks GitHub only when you click it, then offers **Update to vN**, which installs that release the same way and restarts the tray. `VINOWATCH_VERSION=vN vinowatch-upgrade` does the same from a terminal.
 
@@ -98,7 +100,7 @@ Everything `install.sh` writes is under your home, so it never touches `/usr`. `
 
 ## Immutable distros
 
-On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the `curl | sh` install; nothing needs layering with `rpm-ostree` or `transactional-update`. `sudo ./install-npu-reset.sh` works too, since `/etc` is writable on all of them.
+On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the `curl | sh` install; nothing needs layering with `rpm-ostree` or `transactional-update`. `sudo ~/.local/share/vinowatch/install-npu-reset.sh` works too, since `/etc` is writable on all of them.
 
 To build from source there, build in a toolbox (or distrobox) and install from the host, where `systemctl --user` reaches your session:
 
