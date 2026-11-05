@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-05
+
+### Fixed
+
+- install.sh keeps `install-npu-reset.sh`, its unit and its polkit rule in `~/.local/share/vinowatch`, so setting up "Reset NPU driver" no longer means downloading and unpacking the release by hand. `--uninstall` removes them, and prints how to remove the reset unit if it is still installed in `/etc`.
+- `install-npu-reset.sh` stops with a clear message on NixOS, where `/etc` is read-only and `/usr/sbin/modprobe` doesn't exist.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added
