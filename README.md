@@ -32,7 +32,7 @@ It installs `vino-npu-reset.service` and a polkit rule that lets the active loca
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/karanshukla/vinoWatch/main/install.sh | sh
+curl -fsSL https://github.com/karanshukla/vinoWatch/releases/latest/download/install.sh | sh
 ```
 
 This downloads the latest release, checks it against `SHA256SUMS`, puts `vinowatch` in `~/.local/bin`, its icons in `~/.local/share/icons/hicolor`, and enables a systemd user unit that starts the tray with your graphical session. From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes both.

@@ -106,7 +106,7 @@ if [ -f "$here/Cargo.toml" ]; then
     else
         echo "No cargo here to build vinowatch with. Either:" >&2
         echo "  - install the latest release instead (no toolchain needed):" >&2
-        echo "      curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh" >&2
+        echo "      curl -fsSL https://github.com/$repo/releases/latest/download/install.sh | sh" >&2
         echo "  - or build in a toolbox/distrobox, then rerun this on the host:" >&2
         echo "      toolbox run cargo build --release --locked && ./install.sh" >&2
         exit 1

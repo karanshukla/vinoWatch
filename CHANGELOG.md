@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-05
+
 ### Added
 
 - "Check for updates" in the tray menu, under the version. Nothing goes online until you click it; then it offers "Update to vN", which installs that release and restarts the tray. The tray's unit still allows Unix sockets only: the check and the install go through `systemd-run --user`, outside it.
-- install.sh installs itself as `vinowatch-upgrade`, which the menu item runs, and every release also attaches install.sh on its own (`releases/latest/download/install.sh`).
+- install.sh installs itself as `vinowatch-upgrade`, which the menu item runs, and every release also attaches install.sh on its own (`releases/latest/download/install.sh`). Only a release install keeps it: a build from a checkout gets the release page instead, so an update never replaces it.
+- The menu ends with vinopilot.ca and the other vinoPilot apps, then Quit.
+
+### Changed
+
+- Menu icons come from the shared vinoPilot set: `-symbolic` names that Breeze and Adwaita both ship. The healthy driver's icon used to be `emblem-success`, which Adwaita lacks.
 
 ## [0.4.2] - 2026-11-03
 
