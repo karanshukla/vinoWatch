@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The menu no longer lists vinopilot.ca and the other vinoPilot apps: after the version and Check for updates comes Quit.
+
 ## [0.5.1] - 2026-11-05
 
 ### Fixed
