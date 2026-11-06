@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use ksni::menu::{MenuItem, StandardItem, SubMenu};
+use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Category, ToolTip, TrayMethods};
 
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use vino_ui::family::{self, App};
-use vino_ui::tray::{APPS_MENU, MenuIcon};
+use vino_ui::tray::MenuIcon;
 
 use crate::driver::{self, Verdict};
 use crate::icon::{self, State};
@@ -561,7 +561,6 @@ impl ksni::Tray for WatchTray {
             RowIcon::Named("vinowatch"),
         ));
         items.push(self.update_item(update::upgrade_command().is_some()));
-        items.push(apps_menu());
         items.push(
             StandardItem {
                 label: "Quit".into(),
@@ -619,44 +618,6 @@ impl WatchTray {
         }
         items
     }
-}
-
-/// vinopilot.ca and the other vinoPilot apps, the same submenu every
-/// vinoPilot tray ends with.
-fn apps_menu() -> MenuItem<WatchTray> {
-    let link = |label: String, url: &'static str, icon: &str| -> MenuItem<WatchTray> {
-        StandardItem {
-            label: menu_text(&label),
-            icon_name: icon.into(),
-            activate: Box::new(move |_: &mut WatchTray| {
-                if let Err(e) = family::open(url) {
-                    eprintln!("vinowatch: couldn't open {url}: {e}");
-                }
-            }),
-            ..Default::default()
-        }
-        .into()
-    };
-    let mut submenu = vec![
-        link(
-            family::SITE_LABEL.into(),
-            family::SITE,
-            MenuIcon::Website.name(),
-        ),
-        MenuItem::Separator,
-    ];
-    submenu.extend(
-        App::Watch
-            .others()
-            .map(|app| link(app.name().into(), app.page(), "")),
-    );
-    SubMenu {
-        label: APPS_MENU.into(),
-        icon_name: MenuIcon::Apps.name().into(),
-        submenu,
-        ..Default::default()
-    }
-    .into()
 }
 
 enum RowIcon {
@@ -849,25 +810,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_ends_with_the_other_apps_then_quit() {
+    fn the_menu_ends_with_quit_and_lists_no_other_apps() {
         let menu = ksni::Tray::menu(&WatchTray::new(None, None));
-        let [.., MenuItem::SubMenu(apps), MenuItem::Standard(quit)] = menu.as_slice() else {
-            panic!("the menu should end with a submenu, then Quit");
+        let [.., MenuItem::Standard(quit)] = menu.as_slice() else {
+            panic!("the menu should end with Quit");
         };
-        assert_eq!(apps.label, APPS_MENU);
-        assert_eq!(apps.icon_name, MenuIcon::Apps.name());
         assert_eq!(quit.label, "Quit");
-        let labels: Vec<&str> = apps
-            .submenu
-            .iter()
-            .filter_map(|item| match item {
-                MenuItem::Standard(item) => Some(item.label.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(labels[0], family::SITE_LABEL);
-        assert_eq!(labels.len(), App::ALL.len());
-        assert!(!labels.contains(&"vinoWatch"));
+        fn labels(items: &[MenuItem<WatchTray>], out: &mut Vec<String>) {
+            for item in items {
+                match item {
+                    MenuItem::Standard(item) => out.push(item.label.clone()),
+                    MenuItem::SubMenu(item) => {
+                        out.push(item.label.clone());
+                        labels(&item.submenu, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut all = Vec::new();
+        labels(&menu, &mut all);
+        assert!(
+            !all.iter().any(|label| label.contains("vinoPilot")
+                || label.contains(family::SITE_LABEL)
+                || label == "vinoWhisper"),
+            "{all:?}"
+        );
     }
 
     #[test]
