@@ -70,7 +70,7 @@ impl Sampler {
 
     pub fn with_roots(proc_root: PathBuf, accel_root: PathBuf) -> Self {
         Self {
-            sys: System::new(),
+            sys: System::new().expect("failed to initialize system information"),
             meter: Meter::new(),
             proc_root,
             accel_root,
