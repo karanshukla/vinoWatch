@@ -666,7 +666,7 @@ checksum = "58015e2f3b927a0e88f41970e50615b642fb5323839b0ea6f2d7b22b44a554e9"
 
 [[package]]
 name = "vinowatch"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ksni",
  "sysinfo",
