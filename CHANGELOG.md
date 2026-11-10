@@ -5,6 +5,12 @@ All notable changes to vinoWatch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- A poll costs about a third of the CPU it did: `/proc/<pid>/maps` is read again only for a new process or one whose virtual size changed, and threads are no longer refreshed only to be dropped.
+
 ## [0.5.2] - 2026-11-08
 
 ### Changed

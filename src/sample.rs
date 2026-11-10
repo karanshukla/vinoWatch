@@ -1,5 +1,6 @@
 //! One poll of the machine: which processes use OpenVINO, and the NPU load.
 
+use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -59,6 +60,41 @@ pub struct Sampler {
     warn_below_percent: u8,
     /// Ours, to tell which processes' interpreters we may run.
     uid: Option<u32>,
+    maps: MapsCache,
+}
+
+/// What each process's maps said, so idle processes aren't re-read every
+/// poll: building `/proc/<pid>/maps` for every process was most of a poll's
+/// CPU (~85 of ~140 ms with ~450 processes, measured 2026-11-10). Keyed by
+/// start time, so a reused pid is a new process, and re-read when the
+/// virtual size changes, which loading a library does.
+#[derive(Default)]
+struct MapsCache {
+    seen: HashMap<u32, (u64, u64, Option<bool>)>,
+}
+
+impl MapsCache {
+    fn uses_openvino(
+        &mut self,
+        pid: u32,
+        start: u64,
+        vsize: u64,
+        read: impl FnOnce() -> Option<bool>,
+    ) -> Option<bool> {
+        match self.seen.get(&pid) {
+            Some(&(s, v, maps)) if s == start && v == vsize => maps,
+            _ => {
+                let maps = read();
+                self.seen.insert(pid, (start, vsize, maps));
+                maps
+            }
+        }
+    }
+
+    /// Forgets the processes that are gone.
+    fn retain(&mut self, live: impl Fn(u32) -> bool) {
+        self.seen.retain(|&pid, _| live(pid));
+    }
 }
 
 impl Sampler {
@@ -78,13 +114,17 @@ impl Sampler {
             warn_below_percent: 0,
             // /proc/<pid> belongs to the process's effective uid.
             uid: std::fs::metadata("/proc/self").ok().map(|m| m.uid()),
+            maps: MapsCache::default(),
         }
     }
 
     /// CPU % is a delta, so the first poll reads 0 for everything. Call this
     /// once, wait, then poll for real.
     pub fn poll(&mut self) -> Snapshot {
+        // Without tasks: sysinfo would otherwise read every thread, only for
+        // the filter below to drop them.
         let kind = ProcessRefreshKind::nothing()
+            .without_tasks()
             .with_cpu()
             .with_memory()
             .with_cmd(UpdateKind::OnlyIfNotSet)
@@ -123,7 +163,11 @@ impl Sampler {
                     detect::program_project(&cmdline).is_some()
                         && self.proc_root.join(pid.to_string()).exists()
                 };
-                let maps = detect::uses_openvino(&self.proc_root, pid);
+                let maps = self
+                    .maps
+                    .uses_openvino(pid, p.start_time(), p.virtual_memory(), || {
+                        detect::uses_openvino(&self.proc_root, pid)
+                    });
                 if !(by_name || maps == Some(true) || own_program()) {
                     return None;
                 }
@@ -151,6 +195,9 @@ impl Sampler {
                 })
             })
             .collect();
+        let processes = self.sys.processes();
+        self.maps
+            .retain(|pid| processes.contains_key(&sysinfo::Pid::from_u32(pid)));
         // Projects first (in a fixed order), then the busiest.
         procs.sort_by(|a, b| {
             a.project
@@ -313,6 +360,28 @@ fn json_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_are_read_again_only_for_a_new_or_resized_process() {
+        let mut cache = MapsCache::default();
+        let mut reads = 0;
+        let mut check = |cache: &mut MapsCache, start, vsize, maps| {
+            cache.uses_openvino(7, start, vsize, || {
+                reads += 1;
+                maps
+            })
+        };
+        assert_eq!(check(&mut cache, 100, 4096, Some(false)), Some(false));
+        // Unchanged: the first answer stands, even if the maps now differ.
+        assert_eq!(check(&mut cache, 100, 4096, Some(true)), Some(false));
+        // It mapped something new.
+        assert_eq!(check(&mut cache, 100, 8192, Some(true)), Some(true));
+        // Same pid, another process.
+        assert_eq!(check(&mut cache, 200, 8192, None), None);
+        assert_eq!(reads, 3);
+        cache.retain(|_| false);
+        assert!(cache.seen.is_empty());
+    }
 
     #[test]
     fn json_escapes_what_a_process_name_can_contain() {
