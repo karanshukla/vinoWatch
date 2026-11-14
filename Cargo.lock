@@ -660,9 +660,9 @@ dependencies = [
 
 [[package]]
 name = "vino-user-interface"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58015e2f3b927a0e88f41970e50615b642fb5323839b0ea6f2d7b22b44a554e9"
+checksum = "c55852ad0175d1bc093d6e8d2277b77ac603664781425837c555d52e719b480e"
 
 [[package]]
 name = "vinowatch"
