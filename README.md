@@ -45,6 +45,8 @@ To upgrade, use **Check for updates** in the tray menu, under the version: it as
 
 The tray is a StatusNotifierItem. The unit starts with `graphical-session.target`, and for sessions that never start that target, install.sh also writes an XDG autostart entry (`~/.config/autostart/vinowatch.desktop`) that starts the unit.
 
+install.sh adds vinoWatch to the app launcher too (`~/.local/share/applications/vinowatch.desktop`). Picking it there restarts the tray: that starts it if it was stopped, and brings an icon that hid while idle back into view for five minutes.
+
 | Desktop | Tray host | Left click | Hides when idle |
 |---|---|---|---|
 | KDE Plasma | built in | menu | yes |

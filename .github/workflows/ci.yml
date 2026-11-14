@@ -80,6 +80,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --locked
+      # desktop-file-validate, for the launcher entry install.sh writes.
+      - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils
       - run: tests/install-e2e.sh target/debug/vinowatch
 
   # What release.yml builds, on every PR: the static musl x86_64 and aarch64

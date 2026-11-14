@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- install.sh adds vinoWatch to the app launcher (`~/.local/share/applications/vinowatch.desktop`), as the other vino apps are. Picking it there restarts the tray, which brings an icon that hid while idle back into view for five minutes. `--uninstall` removes it.
+
 ### Changed
 
 - A poll costs about a third of the CPU it did: `/proc/<pid>/maps` is read again only for a new process or one whose virtual size changed, and threads are no longer refreshed only to be dropped.

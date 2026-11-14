@@ -1,6 +1,6 @@
 #!/bin/sh
-# Install vinoWatch for the current user: the binary and a systemd user unit
-# that starts the tray with the graphical session. Run with --uninstall to
+# Install vinoWatch for the current user: the binary, a systemd user unit
+# that starts the tray with the graphical session, and an app launcher entry. Run with --uninstall to
 # remove them again.
 #
 # From a checkout it builds from source. Anywhere else, e.g. piped from curl,
@@ -19,6 +19,7 @@ upgrade="$HOME/.local/bin/vinowatch-upgrade"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/vinowatch.desktop"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+launcher="$data_dir/applications/vinowatch.desktop"
 hicolor="$data_dir/icons/hicolor"
 # The root half of "Reset NPU driver", kept from the release so it can be
 # set up later without unpacking the tarball by hand.
@@ -27,6 +28,7 @@ npu_reset="$data_dir/vinowatch"
 if [ "${1:-}" = "--uninstall" ]; then
     systemctl --user disable --now vinowatch.service 2>/dev/null || true
     rm -f "$bin" "$upgrade" "$unit_dir/vinowatch.service" "$autostart" \
+        "$launcher" \
         "$hicolor/scalable/apps/vinowatch.svg" \
         "$hicolor/symbolic/apps/vinowatch-symbolic.svg" \
         "$hicolor/symbolic/apps/vinowatch-active-symbolic.svg" \
@@ -159,8 +161,30 @@ fi
 dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 \
     2>/dev/null || true
 
+# launcher_entry EXEC: the app launcher's entry, as the other vino apps have.
+launcher_entry() {
+    mkdir -p "$(dirname "$launcher")"
+    cat >"$launcher" <<EOF
+[Desktop Entry]
+Type=Application
+Name=vinoWatch
+GenericName=OpenVINO Monitor
+Comment=CPU, RAM and NPU use of OpenVINO apps, in the system tray
+Exec=$1
+Icon=vinowatch
+Terminal=false
+Categories=System;Monitor;
+Keywords=openvino;npu;cpu;ram;memory;monitor;tray;vino;
+StartupNotify=false
+EOF
+}
+
 if systemctl --user daemon-reload 2>/dev/null; then
     systemctl --user enable vinowatch.service
+    # Restart, not start: an idle tray is hidden, and starting a running unit
+    # does nothing, so the launcher would look broken. A fresh tray stays in
+    # view for its first idle minutes.
+    launcher_entry "systemctl --user restart vinowatch.service"
     # XFCE, LXQt, MATE, Budgie and Cinnamon before 6.8 never start
     # graphical-session.target, so the unit's WantedBy doesn't fire there; their
     # session managers run XDG autostart entries instead. X-systemd-skip keeps
@@ -202,5 +226,8 @@ EOF
         echo "Installed. The tray starts with your graphical session."
     fi
 else
-    echo "Installed $bin. No systemd user session here, so run vinowatch yourself."
+    # ~/.local/bin isn't on every session's PATH, hence the full path.
+    launcher_entry "\"$bin\""
+    echo "Installed $bin. No systemd user session here, so run vinowatch yourself,"
+    echo "from a terminal or the app launcher."
 fi
