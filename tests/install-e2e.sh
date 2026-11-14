@@ -73,7 +73,7 @@ expect_refused() {
 icons="scalable/apps/vinowatch.svg symbolic/apps/vinowatch-symbolic.svg
 symbolic/apps/vinowatch-active-symbolic.svg symbolic/apps/vinowatch-low-memory-symbolic.svg"
 
-# A good release installs the binary, the unit and the icons.
+# A good release installs the binary, the unit, the icons and the launcher entry.
 serve "$work/good.tar.gz" "$work/good.sums"
 run
 [ "$status" -eq 0 ] || fail "good release: exit $status: $(cat "$work/out")"
@@ -92,6 +92,14 @@ done
 grep -qx "https://github.com/karanshukla/vinoWatch/releases/latest/download/$tarball" \
     "$work/release/urls" || fail "latest URL: $(cat "$work/release/urls")"
 grep -q "No systemd user session" "$work/out" || fail "no-session message missing"
+# The app launcher's entry. With no unit to start, it runs the binary.
+launcher="$home/.local/share/applications/vinowatch.desktop"
+grep -qx "Exec=\"$home/.local/bin/vinowatch\"" "$launcher" || fail "no launcher entry for the binary"
+grep -qx 'Icon=vinowatch' "$launcher" || fail "launcher entry has no icon"
+! grep -q '^NoDisplay' "$launcher" || fail "launcher entry is hidden"
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    desktop-file-validate "$launcher" || fail "launcher entry doesn't validate"
+fi
 
 # --uninstall removes every file it installed.
 set +e
@@ -120,6 +128,13 @@ entry="$home/.config/autostart/vinowatch.desktop"
 grep -qx 'Exec=systemctl --user start vinowatch.service' "$entry" || fail "no autostart entry"
 grep -qx 'X-systemd-skip=true' "$entry" || fail "autostart entry not skipped by systemd"
 grep -qx -- '--user restart vinowatch.service' "$home/systemctl.log" || fail "X11 session: not started"
+# With a user manager the launcher goes through the unit, so a second click
+# never starts a second tray.
+launcher="$home/.local/share/applications/vinowatch.desktop"
+grep -qx 'Exec=systemctl --user restart vinowatch.service' "$launcher" || fail "no launcher entry for the unit"
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    desktop-file-validate "$launcher" || fail "unit launcher entry doesn't validate"
+fi
 grep -q "starts at each login" "$work/out" || fail "X11 session message: $(cat "$work/out")"
 set +e
 env -i PATH="$work/sdbin:$work/fakebin:/usr/bin:/bin" HOME="$home" sh "$repo/install.sh" --uninstall > "$work/out" 2>&1
