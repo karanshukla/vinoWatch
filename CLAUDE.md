@@ -14,8 +14,9 @@ Guidance for Claude Code when working in this repository.
 - `src/tray/`: ksni StatusNotifierItem, behind the default `tray` feature. `mod.rs` is the item, its icon state and the poll loop; `menu.rs` builds the menu from that state (`build_menu`, which takes what is installed as an argument so tests read the rows as data); `actions.rs` the state of the driver and update actions (`Job`, `Driver`, `Update`); `jobs.rs` runs them off the tray's thread (`dispatch`); `host.rs` is what differs between tray hosts, and `HostTracker`; `testing.rs` is shared by the tray's tests. `sample::testing::proc_row` is the test builder for a `Proc`.
 - `src/icon.rs`, `src/raster.rs`, `src/png.rs`: the icons, drawn from one shape list as tray pixmaps, as the SVGs `--install-icons` writes, and as the PNG meters on each menu row (dbusmenu only takes PNG). Same palette and grid as vinoAuthFace's tray. `data/` holds the generated SVGs; after changing a shape run `VINOWATCH_BLESS_ICONS=1 cargo test`.
 - `src/driver.rs`: the stuck-`intel_vpu` probe (runs Python, as vinoPop's `npu_canary.py`) and the reload via `vino-npu-reset.service`. Root half: `install-npu-reset.sh`, `vino-npu-reset.service`, `vino-npu-reset.rules`.
-- `src/cli.rs`: flags.
-- `docs/`: user docs the README links to. Measurements that used to sit in comments live there, with their dates.
+- `src/cli.rs`: flags. The usage text and every error message are pinned by its tests.
+- `src/update.rs`: the update check and install, through `systemd-run --user`; `found_in` is the pure half.
+- `docs/`: user docs the README links to. Measurements that used to sit in comments live there, with their dates. `docs/hand-written.md` is for contributors: what `serde_json`, `png` and `lexopt` cost when tried, and why `png.rs` and the argument parser stayed.
 
 ## Commands
 
