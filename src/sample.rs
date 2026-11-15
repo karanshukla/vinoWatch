@@ -616,6 +616,73 @@ mod tests {
         );
     }
 
+    /// Whatever writes the JSON must keep these bytes: scripts read them.
+    #[test]
+    fn json_numbers_have_one_decimal_and_sizes_are_whole_mebibytes() {
+        let snap = Snapshot {
+            npu_percent: Some(100.0),
+            procs: vec![
+                Proc {
+                    cpu_percent: 0.05,
+                    ram_bytes: MIB - 1,
+                    ram_is_pss: false,
+                    openvino: false,
+                    ..proc_row(1)
+                },
+                Proc {
+                    cpu_percent: 399.96,
+                    ram_bytes: 3 * MIB + 1,
+                    ..proc_row(2)
+                },
+            ],
+            memory: Some(Memory {
+                total: 1000 * MIB,
+                available: 100 * MIB + 5,
+            }),
+            cgroup_limited: true,
+            low_memory: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            snap.to_json(),
+            concat!(
+                r#"{"npu_percent":100.0,"ram_openvino_mib":4,"ram_total_mib":1000,"ram_available_mib":100,"ram_limit":"cgroup","low_memory":true,"processes":["#,
+                r#"{"pid":1,"name":"x","project":null,"cpu_percent":0.1,"ram_mib":0,"ram_kind":"rss","npu_open":false,"openvino":false},"#,
+                r#"{"pid":2,"name":"x","project":null,"cpu_percent":400.0,"ram_mib":3,"ram_kind":"pss","npu_open":false,"openvino":true}]}"#
+            )
+        );
+        let idle = Snapshot {
+            npu_percent: Some(0.0),
+            ..Default::default()
+        };
+        assert!(idle.to_json().starts_with(r#"{"npu_percent":0.0,"#));
+    }
+
+    #[test]
+    fn json_names_keep_their_escapes() {
+        let named = |name: &str| {
+            let snap = Snapshot {
+                procs: vec![Proc {
+                    name: name.into(),
+                    ..proc_row(1)
+                }],
+                ..Default::default()
+            };
+            let json = snap.to_json();
+            let start = json.find(r#""name":"#).unwrap() + 7;
+            let end = json.find(r#","project""#).unwrap();
+            json[start..end].to_string()
+        };
+        assert_eq!(named("a\"b\\c\nd"), r#""a\"b\\c\u000ad""#);
+        assert_eq!(named("tab\there"), r#""tab\u0009here""#);
+        assert_eq!(
+            named("\u{1}\u{1f}\r\u{8}\u{c}"),
+            r#""\u0001\u001f\u000d\u0008\u000c""#
+        );
+        // Not escaped: a slash, DEL, and anything outside ASCII.
+        assert_eq!(named("a/b\u{7f}é\u{2028}🙂"), "\"a/b\u{7f}é\u{2028}🙂\"");
+    }
+
     #[test]
     fn labels() {
         let p = Proc {
