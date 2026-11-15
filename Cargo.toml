@@ -34,6 +34,8 @@ zbus = { version = "5", optional = true, default-features = false, features = ["
 [dev-dependencies]
 # Scratch directories for the fake /proc, sysfs and cgroup roots.
 tempfile = "3.27"
+# Decodes what src/png.rs encodes, so "a valid PNG" is a test and not a claim.
+png = "0.18.1"
 
 [profile.release]
 lto = true

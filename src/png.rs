@@ -94,4 +94,37 @@ mod tests {
         // zlib header, two 5-byte block headers, the data, adler32.
         assert_eq!(idat_len, 2 + 5 * 2 + (w as usize * 4 + 1) * h as usize + 4);
     }
+
+    fn decoded(encoded: &[u8]) -> (png::OutputInfo, Vec<u8>) {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(encoded))
+            .read_info()
+            .expect("a PNG header");
+        let mut pixels = vec![0; reader.output_buffer_size().expect("a size")];
+        let info = reader.next_frame(&mut pixels).expect("PNG image data");
+        pixels.truncate(info.buffer_size());
+        (info, pixels)
+    }
+
+    /// dbusmenu hands these bytes to whatever PNG decoder the tray host
+    /// uses, so the contract is what a decoder reads back, not the bytes.
+    #[test]
+    fn a_standard_decoder_reads_back_the_same_pixels() {
+        // Two stored blocks, every byte value, alpha included.
+        let (width, height) = (200, 100);
+        let pixels: Vec<u8> = (0..width * height * 4)
+            .map(|i| (i * 7 % 256) as u8)
+            .collect();
+        let (info, read_back) = decoded(&encode(width, height, &pixels));
+        assert_eq!((info.width, info.height), (width, height));
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        assert_eq!(info.bit_depth, png::BitDepth::Eight);
+        assert_eq!(read_back, pixels);
+    }
+
+    #[test]
+    fn a_one_pixel_image_decodes() {
+        let (info, read_back) = decoded(&encode(1, 1, &[1, 2, 3, 4]));
+        assert_eq!((info.width, info.height), (1, 1));
+        assert_eq!(read_back, [1, 2, 3, 4]);
+    }
 }
