@@ -287,13 +287,13 @@ mod tests {
     /// as us when the tray checks the driver.
     #[test]
     fn an_interpreter_others_can_change_is_refused() {
-        let root = std::env::temp_dir().join(format!("vinowatch-trust-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
         let bin = root.join("venv/bin");
         fs::create_dir_all(&bin).unwrap();
         let chmod =
             |p: &Path, mode| fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
-        chmod(&root, 0o755);
+        chmod(root, 0o755);
         chmod(&root.join("venv"), 0o755);
         chmod(&bin, 0o755);
         let python = bin.join("python3");
@@ -332,6 +332,5 @@ mod tests {
         let sh = PathBuf::from("/bin/sh");
         assert_eq!(pick_python(None, std::slice::from_ref(&sh)), sh);
         assert_eq!(pick_python(Some(&python), &[]), python);
-        fs::remove_dir_all(&root).unwrap();
     }
 }

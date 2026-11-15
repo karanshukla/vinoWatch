@@ -714,9 +714,9 @@ mod tests {
 
     #[test]
     fn install_writes_a_hicolor_tree() {
-        let dir = std::env::temp_dir().join(format!("vinowatch-icons-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let written = install(&dir).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path();
+        let written = install(dir).unwrap();
         assert_eq!(written.len(), 4);
         for name in [
             "scalable/apps/vinowatch.svg",
@@ -726,7 +726,6 @@ mod tests {
         ] {
             assert!(dir.join("icons/hicolor").join(name).is_file(), "{name}");
         }
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `install.sh --uninstall` lists the icons by hand; a new one added

@@ -33,18 +33,14 @@ pub fn acquire(path: &Path) -> io::Result<Option<Instance>> {
 mod tests {
     use super::*;
 
-    fn lock_file(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("vinowatch-{name}-{}.lock", std::process::id()))
-    }
-
     #[test]
     fn a_second_tray_is_refused_while_the_first_runs() {
-        let path = lock_file("second");
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("vinowatch.lock");
         let first = acquire(&path).unwrap();
         assert!(first.is_some());
         assert!(acquire(&path).unwrap().is_none());
         drop(first);
         assert!(acquire(&path).unwrap().is_some(), "not released on drop");
-        let _ = std::fs::remove_file(path);
     }
 }
