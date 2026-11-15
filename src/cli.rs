@@ -46,6 +46,7 @@ pub enum Command {
 }
 
 pub const DEFAULT_WARN_BELOW: u8 = 15;
+const DEFAULT_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let (mut console, mut json, mut once, mut check_npu) = (false, false, false, false);
@@ -107,7 +108,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     };
     Ok(Command::Run {
         mode,
-        interval: interval.unwrap_or(Duration::from_secs(2)),
+        interval: interval.unwrap_or(DEFAULT_INTERVAL),
         warn_below,
         probe_python,
     })
