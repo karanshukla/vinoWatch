@@ -319,9 +319,7 @@ impl WatchTray {
 
     /// How full RAM is: amber when it's low, green while OpenVINO runs.
     fn ram_icon(&self) -> RowIcon {
-        let used = self.snap.mem.map_or(0.0, |(total, available)| {
-            1.0 - available as f64 / total.max(1) as f64
-        });
+        let used = self.snap.memory.map_or(0.0, |m| 1.0 - m.share_left());
         let state = if self.snap.low_memory {
             State::LowMemory
         } else if self.in_use() {
@@ -334,8 +332,8 @@ impl WatchTray {
 
     fn ram_share(&self, p: &Proc) -> f64 {
         self.snap
-            .mem
-            .map_or(0.0, |(total, _)| p.ram_bytes as f64 / total.max(1) as f64)
+            .memory
+            .map_or(0.0, |m| p.ram_bytes as f64 / m.total.max(1) as f64)
     }
 
     /// Amber when it's the heavy one (or the biggest while RAM is low), green
@@ -808,6 +806,11 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::Memory;
+
+    fn memory(total: u64, available: u64) -> Memory {
+        Memory { total, available }
+    }
 
     #[test]
     fn the_menu_ends_with_quit_and_lists_no_other_apps() {
@@ -916,7 +919,7 @@ mod tests {
             openvino: true,
         };
         let mut tray = WatchTray::new(None, None);
-        tray.snap.mem = Some((16 * GIB, 8 * GIB));
+        tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
         tray.snap.npu_percent = Some(0.0);
         let waiting = proc(1, 0.2, GIB, true);
         let working = proc(2, 40.0, GIB / 2, false);
@@ -1225,7 +1228,7 @@ mod tests {
         const GIB: u64 = 1024 * 1024 * 1024;
         let base = || {
             let mut tray = WatchTray::new(None, None);
-            tray.snap.mem = Some((16 * GIB, 8 * GIB));
+            tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
             tray.snap.npu_percent = Some(0.0);
             tray.snap.npu_present = true;
             tray
@@ -1241,7 +1244,7 @@ mod tests {
         all.push(("active", tray));
         let mut tray = base();
         tray.snap.procs.push(app(7, "vino_speak", false));
-        tray.snap.mem = Some((16 * GIB, GIB / 2));
+        tray.snap.memory = Some(memory(16 * GIB, GIB / 2));
         tray.snap.low_memory = true;
         all.push(("low memory", tray));
         for (name, driver) in [
