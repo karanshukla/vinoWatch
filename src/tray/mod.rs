@@ -1,6 +1,9 @@
 //! The tray icon: the NPU load in the tooltip, one menu row per process.
 
-use std::collections::HashMap;
+mod actions;
+mod host;
+mod jobs;
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -12,10 +15,13 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use vino_ui::family::{self, App};
 use vino_ui::tray::MenuIcon;
 
-use crate::driver::{self, Verdict};
+use crate::driver;
 use crate::icon::{self, State};
 use crate::sample::{Proc, Sampler, Snapshot};
-use crate::update::{self, Found};
+use crate::update;
+
+use actions::{Driver, DriverJob, Job, Update, UpdateJob};
+use host::{host_recolours, markup_escape, menu_text, watcher_host};
 
 /// Below this the NPU counts as idle; the busy counter ticks a little even
 /// between inferences.
@@ -29,143 +35,10 @@ const HIDE_AFTER: Duration = Duration::from_secs(5 * 60);
 /// 16 GiB machine. Its RAM meter is full here.
 const HEAVY_RAM_SHARE: f64 = 0.2;
 
-/// The menu's actions that run off the tray's thread: the driver probe takes
-/// up to a minute, the reload waits for `modprobe`, and the update ones go to
-/// the network.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Job {
-    Check,
-    Reset,
-    CheckUpdate,
-    /// The release `Update::Available` names.
-    InstallUpdate,
-}
-
-/// Where "Check for updates" is. Nothing goes online until it is clicked.
-#[derive(Clone, Debug, Default, PartialEq)]
-enum Update {
-    #[default]
-    Unchecked,
-    Checking,
-    UpToDate,
-    Available(String),
-    Installing(String),
-    Failed(String),
-}
-
-impl Update {
-    fn busy(&self) -> bool {
-        matches!(self, Update::Checking | Update::Installing(_))
-    }
-
-    fn label(&self) -> String {
-        match self {
-            Update::Unchecked => "Check for updates".into(),
-            Update::Checking => "Checking for updates…".into(),
-            Update::UpToDate => "Up to date: check again".into(),
-            Update::Available(tag) => format!("Update to {tag}"),
-            Update::Installing(tag) => format!("Installing {tag}…"),
-            Update::Failed(why) => format!("Update failed ({}): try again", clip(why)),
-        }
-    }
-}
-
-/// Where the stuck-driver check is. Nothing runs until it is asked for.
-#[derive(Clone, Debug, Default, PartialEq)]
-enum Driver {
-    #[default]
-    Unchecked,
-    Checking,
-    Resetting,
-    Checked {
-        verdict: Verdict,
-        after_reset: bool,
-    },
-    ResetFailed(String),
-}
-
-impl Driver {
-    fn busy(&self) -> bool {
-        matches!(self, Driver::Checking | Driver::Resetting)
-    }
-
-    fn stuck(&self) -> bool {
-        matches!(
-            self,
-            Driver::Checked {
-                verdict: Verdict::Stuck,
-                ..
-            }
-        )
-    }
-
-    fn icon_name(&self) -> &'static str {
-        match self {
-            Driver::Unchecked | Driver::Checking | Driver::Resetting => MenuIcon::Refresh.name(),
-            Driver::Checked {
-                verdict: Verdict::Healthy,
-                ..
-            } => MenuIcon::Ok.name(),
-            Driver::Checked {
-                verdict: Verdict::Stuck,
-                ..
-            } => MenuIcon::Warning.name(),
-            Driver::Checked {
-                verdict: Verdict::Unknown(_),
-                ..
-            } => MenuIcon::Question.name(),
-            Driver::ResetFailed(_) => MenuIcon::Error.name(),
-        }
-    }
-
-    fn label(&self) -> Option<String> {
-        Some(match self {
-            Driver::Unchecked => return None,
-            Driver::Checking => "Checking the NPU driver…".into(),
-            Driver::Resetting => "Reloading the NPU driver…".into(),
-            Driver::Checked {
-                verdict: Verdict::Healthy,
-                after_reset,
-            } => if *after_reset {
-                "NPU driver reloaded and OK"
-            } else {
-                "NPU driver OK"
-            }
-            .into(),
-            Driver::Checked {
-                verdict: Verdict::Stuck,
-                after_reset,
-            } => if *after_reset {
-                "NPU driver still stuck after a reload: reboot"
-            } else {
-                "NPU driver stuck: close the apps holding the NPU, then reset it"
-            }
-            .into(),
-            Driver::Checked {
-                verdict: Verdict::Unknown(why),
-                after_reset,
-            } => format!(
-                "{}NPU check inconclusive: {}",
-                if *after_reset {
-                    "NPU driver reloaded. "
-                } else {
-                    ""
-                },
-                clip(why)
-            ),
-            Driver::ResetFailed(why) => format!("NPU reset failed: {}", clip(why)),
-        })
-    }
-}
-
-/// A Python error can name a long library path; a menu row shouldn't.
-fn clip(text: &str) -> String {
-    const MAX: usize = 100;
-    match text.char_indices().nth(MAX) {
-        Some((at, _)) => format!("{}…", &text[..at]),
-        None => text.into(),
-    }
-}
+const CHECK_DRIVER: Job = Job::Driver(DriverJob::Check);
+const RESET_DRIVER: Job = Job::Driver(DriverJob::Reset);
+const CHECK_UPDATE: Job = Job::Update(UpdateJob::Check);
+const INSTALL_UPDATE: Job = Job::Update(UpdateJob::Install);
 
 struct WatchTray {
     snap: Snapshot,
@@ -226,23 +99,23 @@ impl WatchTray {
     fn start(&mut self, job: Job) {
         let Some(jobs) = &self.jobs else { return };
         let busy = match job {
-            Job::Check | Job::Reset => self.driver.busy(),
-            Job::CheckUpdate | Job::InstallUpdate => self.update.busy(),
+            Job::Driver(_) => self.driver.busy(),
+            Job::Update(_) => self.update.busy(),
         };
         if busy {
             return;
         }
-        if job == Job::InstallUpdate && !matches!(self.update, Update::Available(_)) {
+        if job == INSTALL_UPDATE && !matches!(self.update, Update::Available(_)) {
             return;
         }
         if jobs.send(job).is_err() {
             return;
         }
         match job {
-            Job::Check => self.driver = Driver::Checking,
-            Job::Reset => self.driver = Driver::Resetting,
-            Job::CheckUpdate => self.update = Update::Checking,
-            Job::InstallUpdate => {
+            Job::Driver(DriverJob::Check) => self.driver = Driver::Checking,
+            Job::Driver(DriverJob::Reset) => self.driver = Driver::Resetting,
+            Job::Update(UpdateJob::Check) => self.update = Update::Checking,
+            Job::Update(UpdateJob::Install) => {
                 if let Update::Available(tag) = &self.update {
                     self.update = Update::Installing(tag.clone());
                 }
@@ -265,8 +138,8 @@ impl WatchTray {
                     }
                 })
             }
-            Update::Available(_) => Box::new(|tray: &mut Self| tray.start(Job::InstallUpdate)),
-            _ => Box::new(|tray: &mut Self| tray.start(Job::CheckUpdate)),
+            Update::Available(_) => Box::new(|tray: &mut Self| tray.start(INSTALL_UPDATE)),
+            _ => Box::new(|tray: &mut Self| tray.start(CHECK_UPDATE)),
         };
         StandardItem {
             label: menu_text(&self.update.label()),
@@ -319,9 +192,7 @@ impl WatchTray {
 
     /// How full RAM is: amber when it's low, green while OpenVINO runs.
     fn ram_icon(&self) -> RowIcon {
-        let used = self.snap.mem.map_or(0.0, |(total, available)| {
-            1.0 - available as f64 / total.max(1) as f64
-        });
+        let used = self.snap.memory.map_or(0.0, |m| 1.0 - m.share_left());
         let state = if self.snap.low_memory {
             State::LowMemory
         } else if self.in_use() {
@@ -334,8 +205,8 @@ impl WatchTray {
 
     fn ram_share(&self, p: &Proc) -> f64 {
         self.snap
-            .mem
-            .map_or(0.0, |(total, _)| p.ram_bytes as f64 / total.max(1) as f64)
+            .memory
+            .map_or(0.0, |m| p.ram_bytes as f64 / m.total.max(1) as f64)
     }
 
     /// Amber when it's the heavy one (or the biggest while RAM is low), green
@@ -367,7 +238,6 @@ impl WatchTray {
     }
 
     fn state(&self) -> State {
-        // The amber icon covers both warnings.
         if self.snap.low_memory || self.driver.stuck() {
             State::LowMemory
         } else if self.in_use() {
@@ -385,56 +255,6 @@ fn pixmaps(state: State) -> Vec<ksni::Icon> {
     let all = ICONS.get_or_init(|| State::ALL.map(icon::tray_icons));
     let i = State::ALL.iter().position(|&s| s == state).unwrap_or(0);
     all[i].clone()
-}
-
-/// The spec lets a tooltip's description carry markup, and XFCE, Cinnamon,
-/// MATE, Budgie and Plasma parse it as such: a `<` in a driver error or a
-/// process name would otherwise cut the tooltip short.
-fn markup_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// Tray hosts that draw a themed `-symbolic` icon as the SVG has it instead of
-/// in the panel's text colour, by the watcher's process name (`comm`, cut to
-/// 15 characters). The glyph is near-black, and these panels are usually dark.
-const NO_RECOLOUR_HOSTS: &[&str] = &[
-    "lxqt-panel",
-    "mate-panel",
-    // mate-panel's notification area when it runs out of process.
-    "notification-ar",
-    "swaybar",
-];
-
-/// Whether the tray host recolours `-symbolic` icons. `watcher` is the process
-/// name owning `org.kde.StatusNotifierWatcher`, `desktop` is
-/// `XDG_CURRENT_DESKTOP`; the desktop covers a watcher we couldn't name.
-fn host_recolours(watcher: Option<&str>, desktop: Option<&str>) -> bool {
-    if watcher.is_some_and(|name| NO_RECOLOUR_HOSTS.contains(&name.trim())) {
-        return false;
-    }
-    let desktop = desktop.unwrap_or_default();
-    watcher.is_some() || !desktop.split(':').any(|d| d == "LXQt" || d == "MATE")
-}
-
-/// The process name of whoever owns the tray watcher now, with its unique bus
-/// name so a change of host is noticed.
-async fn watcher_host(dbus: &zbus::fdo::DBusProxy<'_>) -> Option<(String, Option<String>)> {
-    let name = zbus::names::BusName::try_from("org.kde.StatusNotifierWatcher").ok()?;
-    let owner = dbus.get_name_owner(name).await.ok()?;
-    let pid = dbus
-        .get_connection_unix_process_id(owner.as_ref().into())
-        .await
-        .ok();
-    let comm = pid.and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok());
-    Some((owner.to_string(), comm))
-}
-
-/// ksni treats "_" as an access-key marker and hides it; a doubled one is a
-/// literal underscore. Process names like `vino_speak` have them.
-fn menu_text(label: &str) -> String {
-    label.replace('_', "__")
 }
 
 impl ksni::Tray for WatchTray {
@@ -465,11 +285,9 @@ impl ksni::Tray for WatchTray {
         pixmaps(self.state())
     }
 
-    // Passive, as vinoWhisper does when idle: the host hides the icon (Plasma
-    // files it under the expander, waybar drops it) until the NPU is used.
+    // Hosts hide a Passive item. `the_icon_hides_once_the_npu_has_idled_five_minutes`
+    // and `a_stuck_driver_turns_amber_and_stays_in_view` pin when it is one.
     fn status(&self) -> ksni::Status {
-        // A stuck driver stays in view after its apps exit: that is when the
-        // reset can run.
         if self.driver.stuck() {
             ksni::Status::NeedsAttention
         } else if self.npu_quiet && !self.driver.busy() {
@@ -550,9 +368,7 @@ impl ksni::Tray for WatchTray {
                 .map(|p| note(p.label(), self.proc_icon(p))),
         );
         items.push(MenuItem::Separator);
-        // Once checked, keep these: a reload whose modprobe failed leaves no
-        // device, and the reset is how to retry.
-        if self.snap.npu_present || self.driver != Driver::Unchecked {
+        if self.offers_driver_actions() {
             items.extend(self.driver_items(driver::reset_installed()));
             items.push(MenuItem::Separator);
         }
@@ -575,6 +391,13 @@ impl ksni::Tray for WatchTray {
 }
 
 impl WatchTray {
+    /// With an NPU, and from the first check on even without one: a reload
+    /// whose `modprobe` failed leaves no device, and the reset is the retry
+    /// (`the_driver_check_shows_with_an_npu`).
+    fn offers_driver_actions(&self) -> bool {
+        self.snap.npu_present || self.driver != Driver::Unchecked
+    }
+
     /// `reset_installed`: whether `install-npu-reset.sh` has been run.
     fn driver_items(&self, reset_installed: bool) -> Vec<MenuItem<Self>> {
         let busy = self.driver.busy();
@@ -583,7 +406,7 @@ impl WatchTray {
                 label: "Check NPU driver".into(),
                 icon_name: MenuIcon::Search.name().into(),
                 enabled: !busy,
-                activate: Box::new(|tray: &mut Self| tray.start(Job::Check)),
+                activate: Box::new(|tray: &mut Self| tray.start(CHECK_DRIVER)),
                 ..Default::default()
             }
             .into(),
@@ -602,9 +425,8 @@ impl WatchTray {
             StandardItem {
                 label: "Reset NPU driver".into(),
                 icon_name: MenuIcon::Refresh.name().into(),
-                // Nothing is stopped for you; the reset waits for them.
                 enabled: !busy && holders.is_empty(),
-                activate: Box::new(|tray: &mut Self| tray.start(Job::Reset)),
+                activate: Box::new(|tray: &mut Self| tray.start(RESET_DRIVER)),
                 ..Default::default()
             }
             .into(),
@@ -641,96 +463,6 @@ fn note(label: String, icon: RowIcon) -> MenuItem<WatchTray> {
         ..Default::default()
     }
     .into()
-}
-
-/// Runs an update job and returns where the update row is afterwards.
-async fn run_update(job: Job, handle: &ksni::Handle<WatchTray>) -> Update {
-    match job {
-        Job::CheckUpdate => {
-            let found = tokio::task::spawn_blocking(|| update::check(env!("CARGO_PKG_VERSION")))
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()));
-            match found {
-                Ok(Found::UpToDate) => Update::UpToDate,
-                Ok(Found::Newer(tag)) => Update::Available(tag),
-                Err(why) => Update::Failed(why),
-            }
-        }
-        _ => {
-            let tag = handle
-                .update(|tray| match &tray.update {
-                    Update::Installing(tag) => Some(tag.clone()),
-                    _ => None,
-                })
-                .await
-                .flatten();
-            let (Some(tag), Some(upgrade)) = (tag, update::upgrade_command()) else {
-                return Update::Failed("no vinowatch-upgrade".into());
-            };
-            let failed_tag = tag.clone();
-            // Success restarts the tray, which ends this process on the new
-            // binary; returning at all means it didn't happen.
-            match tokio::task::spawn_blocking(move || update::install(&upgrade, &tag)).await {
-                Ok(Err(why)) => Update::Failed(why),
-                Ok(Ok(())) => Update::Available(failed_tag),
-                Err(e) => Update::Failed(e.to_string()),
-            }
-        }
-    }
-}
-
-/// Runs one job and returns where the driver is afterwards.
-async fn run_job(job: Job, python: PathBuf, handle: &ksni::Handle<WatchTray>) -> Driver {
-    let after_reset = match job {
-        Job::Check | Job::CheckUpdate | Job::InstallUpdate => false,
-        Job::Reset => {
-            let reset = tokio::task::spawn_blocking(driver::reset)
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()));
-            if let Err(why) = reset {
-                return Driver::ResetFailed(why);
-            }
-            handle.update(|t| t.driver = Driver::Checking).await;
-            true
-        }
-    };
-    let verdict = tokio::task::spawn_blocking(move || driver::probe(&python))
-        .await
-        .unwrap_or_else(|e| Verdict::Unknown(e.to_string()));
-    Driver::Checked {
-        verdict,
-        after_reset,
-    }
-}
-
-/// The menu closes on click, so without this a check that ends "OK" looks
-/// like it did nothing. Best effort: no notification server, no popup.
-async fn notify(driver: &Driver) {
-    let Some(summary) = driver.label() else {
-        return;
-    };
-    let Ok(bus) = zbus::Connection::session().await else {
-        return;
-    };
-    let hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
-    let _ = bus
-        .call_method(
-            Some("org.freedesktop.Notifications"),
-            "/org/freedesktop/Notifications",
-            Some("org.freedesktop.Notifications"),
-            "Notify",
-            &(
-                "vinoWatch",
-                0u32,
-                "vinowatch",
-                summary,
-                "",
-                Vec::<&str>::new(),
-                hints,
-                -1i32,
-            ),
-        )
-        .await;
 }
 
 /// Runs until the tray is quit. Errors if there is no session bus; with no
@@ -781,25 +513,26 @@ pub fn run(
                         return Err("the tray icon went away".into());
                     }
                 }
-                Some(job) = queue.recv() => {
-                    if matches!(job, Job::CheckUpdate | Job::InstallUpdate) {
+                Some(job) = queue.recv() => match job {
+                    Job::Update(job) => {
                         let handle = handle.clone();
                         tokio::spawn(async move {
-                            let update = run_update(job, &handle).await;
+                            let update = jobs::run_update_job(job, &handle).await;
                             handle.update(|tray| tray.update = update).await;
                         });
-                        continue;
                     }
-                    let Some(python) = handle.update(|tray| tray.python()).await else {
-                        return Err("the tray icon went away".into());
-                    };
-                    let handle = handle.clone();
-                    tokio::spawn(async move {
-                        let driver = run_job(job, python, &handle).await;
-                        notify(&driver).await;
-                        handle.update(|tray| tray.driver = driver).await;
-                    });
-                }
+                    Job::Driver(job) => {
+                        let Some(python) = handle.update(|tray| tray.python()).await else {
+                            return Err("the tray icon went away".into());
+                        };
+                        let handle = handle.clone();
+                        tokio::spawn(async move {
+                            let driver = jobs::run_driver_job(job, python, &handle).await;
+                            jobs::notify(&driver).await;
+                            handle.update(|tray| tray.driver = driver).await;
+                        });
+                    }
+                },
             }
         }
     })
@@ -808,6 +541,13 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::Memory;
+    use crate::driver::Verdict;
+    use std::collections::HashMap;
+
+    fn memory(total: u64, available: u64) -> Memory {
+        Memory { total, available }
+    }
 
     #[test]
     fn the_menu_ends_with_quit_and_lists_no_other_apps() {
@@ -839,32 +579,12 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_text_is_escaped() {
-        assert_eq!(markup_escape("a <b> & c"), "a &lt;b&gt; &amp; c");
-    }
-
-    #[test]
     fn hosts_that_dont_recolour_get_pixmaps() {
-        assert!(host_recolours(Some("waybar\n"), None));
-        assert!(host_recolours(Some("plasmashell"), Some("KDE")));
-        assert!(!host_recolours(Some("swaybar\n"), Some("sway")));
-        assert!(!host_recolours(Some("lxqt-panel"), None));
-        assert!(!host_recolours(Some("notification-ar"), None));
-        // No name for the watcher: go by the desktop.
-        assert!(!host_recolours(None, Some("X-Ubuntu:MATE")));
-        assert!(host_recolours(None, Some("XFCE")));
-        assert!(host_recolours(None, None));
         let mut tray = WatchTray::new(None, None);
         tray.themed_icons = false;
         assert_eq!(ksni::Tray::icon_name(&tray), "");
         assert_eq!(ksni::Tray::attention_icon_name(&tray), "");
         assert!(!ksni::Tray::icon_pixmap(&tray).is_empty());
-    }
-
-    #[test]
-    fn menu_labels_keep_their_underscores() {
-        assert_eq!(menu_text("vino_speak pid 1"), "vino__speak pid 1");
-        assert_eq!(menu_text("no underscores"), "no underscores");
     }
 
     #[test]
@@ -916,7 +636,7 @@ mod tests {
             openvino: true,
         };
         let mut tray = WatchTray::new(None, None);
-        tray.snap.mem = Some((16 * GIB, 8 * GIB));
+        tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
         tray.snap.npu_percent = Some(0.0);
         let waiting = proc(1, 0.2, GIB, true);
         let working = proc(2, 40.0, GIB / 2, false);
@@ -1068,19 +788,19 @@ mod tests {
         let (jobs, mut queue) = unbounded_channel();
         let mut tray = WatchTray::new(None, Some(jobs));
         // Nothing to install yet.
-        tray.start(Job::InstallUpdate);
+        tray.start(INSTALL_UPDATE);
         assert!(queue.try_recv().is_err());
-        tray.start(Job::CheckUpdate);
-        tray.start(Job::CheckUpdate);
-        assert_eq!(queue.try_recv(), Ok(Job::CheckUpdate));
+        tray.start(CHECK_UPDATE);
+        tray.start(CHECK_UPDATE);
+        assert_eq!(queue.try_recv(), Ok(CHECK_UPDATE));
         assert!(queue.try_recv().is_err(), "a second check while one runs");
         assert_eq!(tray.update, Update::Checking);
         // A driver check isn't held up by it.
-        tray.start(Job::Check);
-        assert_eq!(queue.try_recv(), Ok(Job::Check));
+        tray.start(CHECK_DRIVER);
+        assert_eq!(queue.try_recv(), Ok(CHECK_DRIVER));
         tray.update = Update::Available("v0.5.0".into());
-        tray.start(Job::InstallUpdate);
-        assert_eq!(queue.try_recv(), Ok(Job::InstallUpdate));
+        tray.start(INSTALL_UPDATE);
+        assert_eq!(queue.try_recv(), Ok(INSTALL_UPDATE));
         assert_eq!(tray.update, Update::Installing("v0.5.0".into()));
     }
 
@@ -1149,21 +869,6 @@ mod tests {
     }
 
     #[test]
-    fn long_errors_are_clipped() {
-        let tray = WatchTray {
-            driver: Driver::Checked {
-                verdict: Verdict::Unknown("x".repeat(500)),
-                after_reset: true,
-            },
-            ..WatchTray::new(None, None)
-        };
-        let label = tray.driver.label().unwrap();
-        assert!(label.starts_with("NPU driver reloaded. NPU check inconclusive: xxx"));
-        assert!(label.ends_with("x…"));
-        assert!(label.chars().count() < 200);
-    }
-
-    #[test]
     fn a_stuck_driver_turns_amber_and_stays_in_view() {
         use ksni::Tray;
         let mut tray = WatchTray::new(None, None);
@@ -1187,10 +892,10 @@ mod tests {
     fn one_driver_job_at_a_time() {
         let (jobs, mut queue) = unbounded_channel();
         let mut tray = WatchTray::new(None, Some(jobs));
-        tray.start(Job::Check);
-        tray.start(Job::Reset);
+        tray.start(CHECK_DRIVER);
+        tray.start(RESET_DRIVER);
         assert_eq!(tray.driver, Driver::Checking);
-        assert_eq!(queue.try_recv(), Ok(Job::Check));
+        assert_eq!(queue.try_recv(), Ok(CHECK_DRIVER));
         assert!(queue.try_recv().is_err());
     }
 
@@ -1225,7 +930,7 @@ mod tests {
         const GIB: u64 = 1024 * 1024 * 1024;
         let base = || {
             let mut tray = WatchTray::new(None, None);
-            tray.snap.mem = Some((16 * GIB, 8 * GIB));
+            tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
             tray.snap.npu_percent = Some(0.0);
             tray.snap.npu_present = true;
             tray
@@ -1241,7 +946,7 @@ mod tests {
         all.push(("active", tray));
         let mut tray = base();
         tray.snap.procs.push(app(7, "vino_speak", false));
-        tray.snap.mem = Some((16 * GIB, GIB / 2));
+        tray.snap.memory = Some(memory(16 * GIB, GIB / 2));
         tray.snap.low_memory = true;
         all.push(("low memory", tray));
         for (name, driver) in [

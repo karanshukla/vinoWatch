@@ -6,7 +6,6 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 
 fn vinowatch(args: &[&str]) -> Output {
@@ -22,14 +21,6 @@ fn stdout(out: &Output) -> String {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// A scratch directory per test, so the tests can run in parallel.
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vinowatch-cli-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 #[test]
@@ -98,20 +89,21 @@ fn check_npu_exit_codes() {
     assert_eq!(out.status.code(), Some(3));
     assert!(stdout(&out).starts_with("Couldn't tell (/bin/false): "));
 
-    let dir = scratch("stuck");
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path();
     let segv = dir.join("python3");
     fs::write(&segv, "#!/bin/sh\nkill -SEGV $$\n").unwrap();
     fs::set_permissions(&segv, fs::Permissions::from_mode(0o755)).unwrap();
     let out = vinowatch(&["--check-npu", "--probe-python", segv.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout(&out).starts_with("NPU driver stuck: "));
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[cfg(feature = "tray")]
 #[test]
 fn install_icons_writes_the_theme_files() {
-    let dir = scratch("icons");
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path();
     let out = vinowatch(&["--install-icons", dir.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let listed: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
@@ -120,24 +112,23 @@ fn install_icons_writes_the_theme_files() {
         assert!(path.starts_with(dir.join("icons/hicolor").to_str().unwrap()));
         assert!(fs::read_to_string(path).unwrap().starts_with("<svg"));
     }
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A second tray exits 0, so the unit doesn't restart it in a loop.
 #[cfg(feature = "tray")]
 #[test]
 fn a_second_tray_exits_cleanly() {
-    let dir = scratch("lock");
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path();
     let lock = fs::File::create(dir.join("vinowatch.lock")).unwrap();
     lock.try_lock().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_vinowatch"))
-        .env("XDG_RUNTIME_DIR", &dir)
+        .env("XDG_RUNTIME_DIR", dir)
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(stderr(&out), "vinowatch: the tray is already running\n");
     drop(lock);
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[cfg(not(feature = "tray"))]

@@ -62,8 +62,8 @@ fn run(mode: Mode, interval: Duration, warn_below: u8, probe_python: Option<Path
     match mode {
         #[cfg(feature = "tray")]
         Mode::Tray => {
-            // Keeps the lock until the tray exits. A second copy exits
-            // cleanly, so the unit doesn't restart it in a loop.
+            // Held until the tray exits. A second copy exits 0, or the unit
+            // would restart it in a loop (`a_second_tray_exits_cleanly`).
             let _instance = match instance::lock_path().map(|p| instance::acquire(&p)) {
                 Some(Ok(None)) => {
                     eprintln!("vinowatch: the tray is already running");

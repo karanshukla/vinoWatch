@@ -7,7 +7,7 @@ use std::time::Instant;
 /// Cumulative NPU busy time in microseconds, if an `ivpu` device exposes it.
 pub fn busy_us(sysfs_class_accel: &Path) -> Option<u64> {
     let mut entries: Vec<_> = fs::read_dir(sysfs_class_accel).ok()?.flatten().collect();
-    // Stable order, so two NPUs don't swap places between polls.
+    // `two_npus_are_read_in_name_order`: the same device every poll.
     entries.sort_by_key(|e| e.file_name());
     entries.iter().find_map(|entry| {
         fs::read_to_string(entry.path().join("device/npu_busy_time_us"))
@@ -102,14 +102,35 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_counter_from_sysfs() {
-        let root = std::env::temp_dir().join(format!("vinowatch-npu-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        assert_eq!(busy_us(&root), None);
+    fn two_npus_are_read_in_name_order() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        // Created in reverse, so directory order alone would favour accel1.
+        for (device, busy) in [("accel1", "111\n"), ("accel0", "222\n")] {
+            fs::create_dir_all(root.join(device).join("device")).unwrap();
+            fs::write(root.join(device).join("device/npu_busy_time_us"), busy).unwrap();
+        }
+        assert_eq!(busy_us(root), Some(222));
+    }
+
+    #[test]
+    fn a_device_without_the_counter_is_passed_over() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
         fs::create_dir_all(root.join("accel0/device")).unwrap();
-        assert_eq!(busy_us(&root), None);
+        fs::create_dir_all(root.join("accel1/device")).unwrap();
+        fs::write(root.join("accel1/device/npu_busy_time_us"), "333\n").unwrap();
+        assert_eq!(busy_us(root), Some(333));
+    }
+
+    #[test]
+    fn reads_the_counter_from_sysfs() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        assert_eq!(busy_us(&root.join("missing")), None);
+        fs::create_dir_all(root.join("accel0/device")).unwrap();
+        assert_eq!(busy_us(root), None);
         fs::write(root.join("accel0/device/npu_busy_time_us"), "123456\n").unwrap();
-        assert_eq!(busy_us(&root), Some(123456));
-        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(busy_us(root), Some(123456));
     }
 }

@@ -16,5 +16,5 @@ CI has no NPU. Say which of these applies:
 ## Checklist
 
 - [ ] Comments explain *why*, not what, and any measured claim carries a date
-- [ ] README / CONTRIBUTING updated if behaviour or setup changed
+- [ ] README / docs / CONTRIBUTING updated if behaviour or setup changed
 - [ ] No secrets, tokens or machine-specific paths committed

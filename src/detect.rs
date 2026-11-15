@@ -38,9 +38,8 @@ impl fmt::Display for Project {
 /// Python apps all show up as `python3`, so the command line is what names them.
 pub fn classify(cmdline: &[String], cwd: Option<&str>) -> Option<Project> {
     let mut haystack = cmdline.join(" ").to_lowercase();
-    // vinoPop runs as `python3 <checkout>/vinopop` (vinoPop#70), or as
-    // `python3 main.py` from older launchers; then its checkout path, in the
-    // command line or the working directory, is what names it.
+    // Older vinoPop launchers run `python3 main.py`: only the checkout
+    // directory names it (`vinopop_is_found_by_its_checkout_directory`).
     if let Some(cwd) = cwd {
         haystack.push(' ');
         haystack.push_str(&cwd.to_lowercase());
@@ -135,50 +134,88 @@ pub fn pss_bytes(proc_root: &Path, pid: u32) -> Option<u64> {
     kib_field(&text, "Pss:").map(|kib| kib * 1024)
 }
 
-/// `(MemTotal, MemAvailable)` in bytes from `/proc/meminfo`.
-pub fn meminfo(proc_root: &Path) -> Option<(u64, u64)> {
-    let text = fs::read_to_string(proc_root.join("meminfo")).ok()?;
-    Some((
-        kib_field(&text, "MemTotal:")? * 1024,
-        kib_field(&text, "MemAvailable:")? * 1024,
-    ))
+/// Memory against its ceiling: the machine's RAM, or a cgroup limit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Memory {
+    pub total: u64,
+    pub available: u64,
 }
 
-/// The tightest memory limit above `pid` in the cgroup v2 tree, as
-/// `(limit, available)` bytes, or `None` if no cgroup around it sets one (or
-/// the tree isn't cgroup v2).
-///
-/// "Used" is `memory.current` minus inactive file cache, like `docker stats`:
-/// the cgroup is charged for page cache too, but that gives way under
-/// pressure, so counting it would raise the alarm too early.
-pub fn cgroup_headroom(proc_root: &Path, cgroup_root: &Path, pid: u32) -> Option<(u64, u64)> {
-    let listing = fs::read_to_string(proc_root.join(format!("{pid}/cgroup"))).ok()?;
-    // cgroup v2 is the single `0::/path` line; v1 has one line per controller.
-    let path = listing.lines().find_map(|l| l.strip_prefix("0::"))?;
-    let mut dir = cgroup_root.join(path.trim_start_matches('/'));
-    let mut tightest: Option<(u64, u64)> = None;
+impl Memory {
+    /// The share of its own total still free, 0 to 1.
+    pub fn share_left(self) -> f64 {
+        self.available as f64 / self.total.max(1) as f64
+    }
+
+    /// Whether this runs out before `other` does.
+    pub fn tighter_than(self, other: Memory) -> bool {
+        self.share_left() < other.share_left()
+    }
+
+    /// Whether less than `percent` of the total is available; 0 never is.
+    pub fn below_percent(self, percent: u8) -> bool {
+        self.available.saturating_mul(100) < self.total.saturating_mul(percent.into())
+    }
+}
+
+/// `MemTotal` and `MemAvailable` from `/proc/meminfo`.
+pub fn meminfo(proc_root: &Path) -> Option<Memory> {
+    let text = fs::read_to_string(proc_root.join("meminfo")).ok()?;
+    Some(Memory {
+        total: kib_field(&text, "MemTotal:")? * 1024,
+        available: kib_field(&text, "MemAvailable:")? * 1024,
+    })
+}
+
+/// The tightest memory limit above `pid` in the cgroup v2 tree, or `None` if
+/// no cgroup around it sets one (or the tree isn't cgroup v2).
+pub fn cgroup_headroom(proc_root: &Path, cgroup_root: &Path, pid: u32) -> Option<Memory> {
+    let mut dir = cgroup_root.join(cgroup_v2_path(proc_root, pid)?);
+    let mut tightest: Option<Memory> = None;
     loop {
-        if let Some(limit) = read_u64(&dir.join("memory.max")) {
-            let current = read_u64(&dir.join("memory.current")).unwrap_or(0);
-            let cache = fs::read_to_string(dir.join("memory.stat"))
-                .ok()
-                .and_then(|s| {
-                    s.lines()
-                        .find_map(|l| l.strip_prefix("inactive_file "))
-                        .and_then(|n| n.trim().parse().ok())
-                })
-                .unwrap_or(0);
-            let available = limit.saturating_sub(current.saturating_sub(cache));
-            // Smallest share of its own limit left is the one that binds.
-            let share = |(l, a): (u64, u64)| a as f64 / l.max(1) as f64;
-            if tightest.is_none_or(|t| share((limit, available)) < share(t)) {
-                tightest = Some((limit, available));
-            }
+        if let Some(limited) = cgroup_memory(&dir)
+            && tightest.is_none_or(|t| limited.tighter_than(t))
+        {
+            tightest = Some(limited);
         }
         if dir == cgroup_root || !dir.pop() || !dir.starts_with(cgroup_root) {
             return tightest;
         }
     }
+}
+
+/// `pid`'s cgroup, relative to the cgroup root. v2 lists it on the single
+/// `0::/path` line; v1 has one line per controller and none like it.
+fn cgroup_v2_path(proc_root: &Path, pid: u32) -> Option<String> {
+    let listing = fs::read_to_string(proc_root.join(format!("{pid}/cgroup"))).ok()?;
+    let path = listing.lines().find_map(|l| l.strip_prefix("0::"))?;
+    Some(path.trim_start_matches('/').to_owned())
+}
+
+/// One cgroup's limit and what is left under it, if it sets a limit.
+///
+/// "Used" is `memory.current` minus inactive file cache, like `docker stats`:
+/// the cgroup is charged for page cache too, but that gives way under
+/// pressure, so counting it would raise the alarm too early.
+fn cgroup_memory(dir: &Path) -> Option<Memory> {
+    let limit = read_u64(&dir.join("memory.max"))?;
+    let current = read_u64(&dir.join("memory.current")).unwrap_or(0);
+    let used = current.saturating_sub(inactive_file_bytes(dir));
+    Some(Memory {
+        total: limit,
+        available: limit.saturating_sub(used),
+    })
+}
+
+fn inactive_file_bytes(cgroup_dir: &Path) -> u64 {
+    fs::read_to_string(cgroup_dir.join("memory.stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.lines()
+                .find_map(|l| l.strip_prefix("inactive_file "))
+                .and_then(|n| n.trim().parse().ok())
+        })
+        .unwrap_or(0)
 }
 
 /// A cgroup file holding one number; `max` (no limit) and anything else
@@ -344,8 +381,8 @@ mod tests {
 
     #[test]
     fn reads_maps_and_fds_from_a_proc_root() {
-        let root = std::env::temp_dir().join(format!("vinowatch-detect-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
         fs::create_dir_all(root.join("7/fd")).unwrap();
         fs::write(
             root.join("7/maps"),
@@ -357,28 +394,26 @@ mod tests {
         fs::create_dir_all(root.join("8/fd")).unwrap();
         std::os::unix::fs::symlink("/dev/null", root.join("8/fd/3")).unwrap();
 
-        assert_eq!(uses_openvino(&root, 7), Some(true));
-        assert!(holds_npu(&root, 7));
-        assert_eq!(uses_openvino(&root, 8), Some(false));
-        assert!(!holds_npu(&root, 8));
+        assert_eq!(uses_openvino(root, 7), Some(true));
+        assert!(holds_npu(root, 7));
+        assert_eq!(uses_openvino(root, 8), Some(false));
+        assert!(!holds_npu(root, 8));
         // A pid with no /proc entry is "no"; one we may not read, "can't tell".
-        assert_eq!(uses_openvino(&root, 9), Some(false));
+        assert_eq!(uses_openvino(root, 9), Some(false));
         fs::create_dir_all(root.join("10")).unwrap();
         fs::write(root.join("10/maps"), "").unwrap();
         fs::set_permissions(root.join("10/maps"), fs::Permissions::from_mode(0o000)).unwrap();
         if fs::read(root.join("10/maps")).is_err() {
             // Root reads it anyway.
-            assert_eq!(uses_openvino(&root, 10), None);
+            assert_eq!(uses_openvino(root, 10), None);
         }
-        assert!(!holds_npu(&root, 9));
-        fs::remove_dir_all(&root).unwrap();
+        assert!(!holds_npu(root, 9));
     }
 
     #[test]
     fn finds_the_tightest_cgroup_limit() {
-        let root = std::env::temp_dir().join(format!("vinowatch-cg-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let (proc_root, cg) = (root.join("proc"), root.join("cg"));
+        let scratch = tempfile::tempdir().unwrap();
+        let (proc_root, cg) = (scratch.path().join("proc"), scratch.path().join("cg"));
         let mib = |n: u64| (n * 1024 * 1024).to_string();
         let write = |dir: &str, max: &str, current: u64, inactive: u64| {
             let d = cg.join(dir);
@@ -400,14 +435,20 @@ mod tests {
 
         assert_eq!(
             cgroup_headroom(&proc_root, &cg, 7),
-            Some((1000 << 20, 400 << 20))
+            Some(Memory {
+                total: 1000 << 20,
+                available: 400 << 20
+            })
         );
 
         // A tighter child wins on the share of its own limit left.
         write("a/b", &mib(200), 190, 0);
         assert_eq!(
             cgroup_headroom(&proc_root, &cg, 7),
-            Some((200 << 20, 10 << 20))
+            Some(Memory {
+                total: 200 << 20,
+                available: 10 << 20
+            })
         );
 
         // No limit anywhere, a v1 listing, and a missing pid are all "none".
@@ -418,13 +459,12 @@ mod tests {
         fs::write(proc_root.join("8/cgroup"), "4:memory:/a\n").unwrap();
         assert_eq!(cgroup_headroom(&proc_root, &cg, 8), None);
         assert_eq!(cgroup_headroom(&proc_root, &cg, 9), None);
-        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn reads_pss_and_meminfo() {
-        let root = std::env::temp_dir().join(format!("vinowatch-mem-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
         fs::create_dir_all(root.join("7")).unwrap();
         fs::write(
             root.join("7/smaps_rollup"),
@@ -436,28 +476,67 @@ mod tests {
             "MemTotal:        8000000 kB\nMemFree: 1 kB\nMemAvailable:   2000000 kB\n",
         )
         .unwrap();
-        assert_eq!(pss_bytes(&root, 7), Some(512 * 1024));
-        assert_eq!(pss_bytes(&root, 8), None);
-        assert_eq!(meminfo(&root), Some((8_000_000 * 1024, 2_000_000 * 1024)));
+        assert_eq!(pss_bytes(root, 7), Some(512 * 1024));
+        assert_eq!(pss_bytes(root, 8), None);
+        assert_eq!(
+            meminfo(root),
+            Some(Memory {
+                total: 8_000_000 * 1024,
+                available: 2_000_000 * 1024
+            })
+        );
         fs::remove_file(root.join("meminfo")).unwrap();
-        assert_eq!(meminfo(&root), None);
-        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(meminfo(root), None);
+    }
+
+    #[test]
+    fn memory_is_low_under_the_warning_share_and_fine_at_it() {
+        let of_1000 = |available| Memory {
+            total: 1000,
+            available,
+        };
+        assert!(of_1000(149).below_percent(15));
+        assert!(!of_1000(150).below_percent(15));
+    }
+
+    #[test]
+    fn a_warning_share_of_zero_never_fires() {
+        let empty = Memory {
+            total: 1000,
+            available: 0,
+        };
+        assert!(!empty.below_percent(0));
+    }
+
+    #[test]
+    fn the_tighter_memory_is_the_one_with_the_smaller_share_left() {
+        let small = Memory {
+            total: 1_000,
+            available: 300,
+        };
+        let large = Memory {
+            total: 16_000,
+            available: 3_200,
+        };
+        // More bytes free, but 20% of its own total against 30%.
+        assert!(large.tighter_than(small));
+        assert!(!small.tighter_than(large));
+        assert!(!small.tighter_than(small));
     }
 
     #[test]
     fn reads_the_real_and_effective_uid() {
-        let root = std::env::temp_dir().join(format!("vinowatch-uid-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
         fs::create_dir_all(root.join("7")).unwrap();
         fs::write(
             root.join("7/status"),
             "Name:\tpython3\nUid:\t1001\t0\t1001\t1001\nGid:\t1001\t1001\t1001\t1001\n",
         )
         .unwrap();
-        assert_eq!(uids(&root, 7), Some((1001, 0)));
+        assert_eq!(uids(root, 7), Some((1001, 0)));
         fs::write(root.join("7/status"), "Name:\tpython3\nUid:\t1001\n").unwrap();
-        assert_eq!(uids(&root, 7), None);
-        assert_eq!(uids(&root, 8), None);
-        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(uids(root, 7), None);
+        assert_eq!(uids(root, 8), None);
     }
 }

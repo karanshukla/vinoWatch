@@ -4,17 +4,18 @@ Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-`vinowatch`: a Rust tray daemon (and console tool) that lists processes using OpenVINO, with their CPU, RAM and, from the `ivpu` driver, system-wide NPU load. It knows the other vino projects (vinoWhisper, vinoSpeak, vinoPop, vinoAuthFace, vinoSearch) by command line. User docs are the README; don't duplicate them here.
+`vinowatch`: a Rust tray daemon (and console tool) that lists processes using OpenVINO, with their CPU, RAM and, from the `ivpu` driver, system-wide NPU load. It knows the other vino projects (vinoWhisper, vinoSpeak, vinoPop, vinoAuthFace, vinoSearch) by command line. User docs are the README (pitch, install, usage, limits) and `docs/` (how it works, desktops, distros, the stuck driver); don't duplicate them here, and when behaviour changes update the page that owns it.
 
 ## Layout
 
-- `src/detect.rs`: is this process an OpenVINO user, which vino app is it. Takes the `/proc` root as a parameter.
+- `src/detect.rs`: is this process an OpenVINO user, which vino app is it, and `Memory` (a total and what is left of it, for the machine or a cgroup). Takes the `/proc` root as a parameter.
 - `src/npu.rs`: the busy-time counter and the percentage between polls.
-- `src/sample.rs`: one poll, plus the `--json` shape.
-- `src/tray.rs`: ksni StatusNotifierItem, behind the default `tray` feature.
+- `src/sample.rs`: one poll (`Sampler::poll`: refresh, `Inspector::inspect` per process, `listing_order`, `binding_memory`), plus the `--json` shape.
+- `src/tray/`: ksni StatusNotifierItem, behind the default `tray` feature. `mod.rs` is the item, its menu and the poll loop; `actions.rs` the state of the driver and update actions (`Job`, `Driver`, `Update`); `jobs.rs` runs them off the tray's thread; `host.rs` is what differs between tray hosts.
 - `src/icon.rs`, `src/raster.rs`, `src/png.rs`: the icons, drawn from one shape list as tray pixmaps, as the SVGs `--install-icons` writes, and as the PNG meters on each menu row (dbusmenu only takes PNG). Same palette and grid as vinoAuthFace's tray. `data/` holds the generated SVGs; after changing a shape run `VINOWATCH_BLESS_ICONS=1 cargo test`.
 - `src/driver.rs`: the stuck-`intel_vpu` probe (runs Python, as vinoPop's `npu_canary.py`) and the reload via `vino-npu-reset.service`. Root half: `install-npu-reset.sh`, `vino-npu-reset.service`, `vino-npu-reset.rules`.
 - `src/cli.rs`: flags.
+- `docs/`: user docs the README links to. Measurements that used to sit in comments live there, with their dates.
 
 ## Commands
 
@@ -32,6 +33,10 @@ CI runs those, plus `shellcheck` on every script, `systemd-analyze verify` on bo
 - `tests/polkit-rule.js`: the reset rule against fake polkit requests (`node`).
 - `release-build`: `.github/package-release.sh` (shared with `release.yml`), then `tests/release-smoke.sh` runs each tarball's binary, aarch64 under qemu-user.
 - `coverage`: `cargo llvm-cov` with a line floor; lcov is an artifact, the summary is on the run page.
+
+## Comments and tests
+
+A rule stated in a comment gets a test named after the rule instead, ideally one either side of its boundary, and the code keeps at most a one-line pointer to the test by name. What a test can't reach (a tray host's behaviour, a systemd or polkit constraint, a security invariant) stays as one line. Tests take scratch directories from `tempfile`, and fake `/proc`, sysfs and cgroup roots under them.
 
 ## Gotchas
 
