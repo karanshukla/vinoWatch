@@ -3,25 +3,26 @@
 mod actions;
 mod host;
 mod jobs;
+mod menu;
+#[cfg(test)]
+mod testing;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use ksni::menu::{MenuItem, StandardItem};
+use ksni::menu::MenuItem;
 use ksni::{Category, ToolTip, TrayMethods};
 
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use vino_ui::family::{self, App};
-use vino_ui::tray::MenuIcon;
 
 use crate::driver;
 use crate::icon::{self, State};
-use crate::sample::{Proc, Sampler, Snapshot};
-use crate::update;
+use crate::sample::{Sampler, Snapshot};
 
 use actions::{Driver, DriverJob, Job, Update, UpdateJob};
-use host::{host_recolours, markup_escape, menu_text, watcher_host};
+use host::{HostTracker, markup_escape, watcher_host};
+use menu::Installed;
 
 /// Below this the NPU counts as idle; the busy counter ticks a little even
 /// between inferences.
@@ -31,9 +32,7 @@ const NPU_BUSY_PERCENT: f64 = 1.0;
 /// vino trays do after their idle minutes.
 const HIDE_AFTER: Duration = Duration::from_secs(5 * 60);
 
-/// One process holding this share of RAM gets an amber row: about 3 GiB on a
-/// 16 GiB machine. Its RAM meter is full here.
-const HEAVY_RAM_SHARE: f64 = 0.2;
+const TRAY_GONE: &str = "the tray icon went away";
 
 const CHECK_DRIVER: Job = Job::Driver(DriverJob::Check);
 const RESET_DRIVER: Job = Job::Driver(DriverJob::Reset);
@@ -123,39 +122,6 @@ impl WatchTray {
         }
     }
 
-    /// The update row under the version. Without `vinowatch-upgrade` (a build
-    /// installed by hand) a newer release opens its page instead.
-    fn update_item(&self, can_install: bool) -> MenuItem<Self> {
-        let activate: Box<dyn Fn(&mut Self) + Send> = match &self.update {
-            Update::Available(tag) if !can_install => {
-                let url = format!(
-                    "https://github.com/{}/releases/tag/{tag}",
-                    App::Watch.repo()
-                );
-                Box::new(move |_: &mut Self| {
-                    if let Err(e) = family::open(&url) {
-                        eprintln!("vinowatch: couldn't open {url}: {e}");
-                    }
-                })
-            }
-            Update::Available(_) => Box::new(|tray: &mut Self| tray.start(INSTALL_UPDATE)),
-            _ => Box::new(|tray: &mut Self| tray.start(CHECK_UPDATE)),
-        };
-        StandardItem {
-            label: menu_text(&self.update.label()),
-            icon_name: MenuIcon::Update.name().into(),
-            enabled: !self.update.busy(),
-            activate,
-            ..Default::default()
-        }
-        .into()
-    }
-
-    /// Processes with `/dev/accel` open: `modprobe -r` refuses while any do.
-    fn holders(&self) -> impl Iterator<Item = &crate::sample::Proc> {
-        self.snap.procs.iter().filter(|p| p.npu_open)
-    }
-
     fn summary(&self) -> String {
         let apps = self.snap.procs.iter().filter(|p| p.openvino).count();
         let helpers = self.snap.procs.len() - apps;
@@ -177,64 +143,6 @@ impl WatchTray {
     fn in_use(&self) -> bool {
         self.snap.procs.iter().any(|p| p.openvino)
             || self.snap.npu_percent.is_some_and(|p| p >= NPU_BUSY_PERCENT)
-    }
-
-    /// The NPU meter: green while it's busy.
-    fn npu_icon(&self) -> RowIcon {
-        let percent = self.snap.npu_percent.unwrap_or(0.0);
-        let state = if percent >= NPU_BUSY_PERCENT {
-            State::Active
-        } else {
-            State::Idle
-        };
-        RowIcon::Drawn(icon::meter_png(state, &[(percent / 100.0) as f32]))
-    }
-
-    /// How full RAM is: amber when it's low, green while OpenVINO runs.
-    fn ram_icon(&self) -> RowIcon {
-        let used = self.snap.memory.map_or(0.0, |m| 1.0 - m.share_left());
-        let state = if self.snap.low_memory {
-            State::LowMemory
-        } else if self.in_use() {
-            State::Active
-        } else {
-            State::Idle
-        };
-        RowIcon::Drawn(icon::meter_png(state, &[used as f32]))
-    }
-
-    fn ram_share(&self, p: &Proc) -> f64 {
-        self.snap
-            .memory
-            .map_or(0.0, |m| p.ram_bytes as f64 / m.total.max(1) as f64)
-    }
-
-    /// Amber when it's the heavy one (or the biggest while RAM is low), green
-    /// while it's working, white while it waits.
-    fn proc_state(&self, p: &Proc) -> State {
-        let biggest = self.snap.procs.iter().map(|q| q.ram_bytes).max();
-        if self.ram_share(p) >= HEAVY_RAM_SHARE
-            || (self.snap.low_memory && biggest == Some(p.ram_bytes))
-        {
-            State::LowMemory
-        } else if p.cpu_percent >= 1.0
-            || (p.npu_open && self.snap.npu_percent.is_some_and(|n| n >= NPU_BUSY_PERCENT))
-        {
-            State::Active
-        } else {
-            State::Idle
-        }
-    }
-
-    /// The process's own CPU, RAM and NPU meters. A full CPU meter is one
-    /// core; a full RAM meter is `HEAVY_RAM_SHARE`.
-    fn proc_icon(&self, p: &Proc) -> RowIcon {
-        let levels = [
-            p.cpu_percent / 100.0,
-            (self.ram_share(p) / HEAVY_RAM_SHARE) as f32,
-            if p.npu_open { 1.0 } else { 0.0 },
-        ];
-        RowIcon::Drawn(icon::meter_png(self.proc_state(p), &levels))
     }
 
     fn state(&self) -> State {
@@ -347,122 +255,8 @@ impl ksni::Tray for WatchTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let mut items = vec![
-            note(self.summary(), self.npu_icon()),
-            note(self.snap.ram_label(), self.ram_icon()),
-        ];
-        items.extend(
-            self.driver
-                .label()
-                .map(|label| note(label, RowIcon::Named(self.driver.icon_name()))),
-        );
-        items.push(MenuItem::Separator);
-        if self.snap.procs.is_empty() {
-            let empty = RowIcon::Drawn(icon::meter_png(State::Idle, &[0.0; 3]));
-            items.push(note("No OpenVINO processes".into(), empty));
-        }
-        items.extend(
-            self.snap
-                .procs
-                .iter()
-                .map(|p| note(p.label(), self.proc_icon(p))),
-        );
-        items.push(MenuItem::Separator);
-        if self.offers_driver_actions() {
-            items.extend(self.driver_items(driver::reset_installed()));
-            items.push(MenuItem::Separator);
-        }
-        items.push(note(
-            format!("vinoWatch {}", env!("CARGO_PKG_VERSION")),
-            RowIcon::Named("vinowatch"),
-        ));
-        items.push(self.update_item(update::upgrade_command().is_some()));
-        items.push(
-            StandardItem {
-                label: "Quit".into(),
-                icon_name: MenuIcon::Quit.name().into(),
-                activate: Box::new(|_: &mut Self| std::process::exit(0)),
-                ..Default::default()
-            }
-            .into(),
-        );
-        items
+        self.build_menu(Installed::on_this_machine())
     }
-}
-
-impl WatchTray {
-    /// With an NPU, and from the first check on even without one: a reload
-    /// whose `modprobe` failed leaves no device, and the reset is the retry
-    /// (`the_driver_check_shows_with_an_npu`).
-    fn offers_driver_actions(&self) -> bool {
-        self.snap.npu_present || self.driver != Driver::Unchecked
-    }
-
-    /// `reset_installed`: whether `install-npu-reset.sh` has been run.
-    fn driver_items(&self, reset_installed: bool) -> Vec<MenuItem<Self>> {
-        let busy = self.driver.busy();
-        let mut items: Vec<MenuItem<Self>> = vec![
-            StandardItem {
-                label: "Check NPU driver".into(),
-                icon_name: MenuIcon::Search.name().into(),
-                enabled: !busy,
-                activate: Box::new(|tray: &mut Self| tray.start(CHECK_DRIVER)),
-                ..Default::default()
-            }
-            .into(),
-        ];
-        if !reset_installed {
-            if self.driver.stuck() {
-                items.push(note(
-                    "Reset needs: sudo ./install-npu-reset.sh".into(),
-                    RowIcon::Named(MenuIcon::Info.name()),
-                ));
-            }
-            return items;
-        }
-        let holders: Vec<&Proc> = self.holders().collect();
-        items.push(
-            StandardItem {
-                label: "Reset NPU driver".into(),
-                icon_name: MenuIcon::Refresh.name().into(),
-                enabled: !busy && holders.is_empty(),
-                activate: Box::new(|tray: &mut Self| tray.start(RESET_DRIVER)),
-                ..Default::default()
-            }
-            .into(),
-        );
-        if !holders.is_empty() {
-            items.push(note(
-                "Close these first:".into(),
-                RowIcon::Named(MenuIcon::Warning.name()),
-            ));
-            items.extend(self.holders().map(|p| note(p.label(), self.proc_icon(p))));
-        }
-        items
-    }
-}
-
-enum RowIcon {
-    /// From the icon theme.
-    Named(&'static str),
-    /// PNG.
-    Drawn(Vec<u8>),
-}
-
-/// A row of text: clicking it does nothing. Left enabled, because hosts grey
-/// out a disabled row's icon and the meters are the point.
-fn note(label: String, icon: RowIcon) -> MenuItem<WatchTray> {
-    let (icon_name, icon_data) = match icon {
-        RowIcon::Named(name) => (name.into(), Vec::new()),
-        RowIcon::Drawn(png) => (String::new(), png),
-    };
-    StandardItem {
-        label: menu_text(&label),
-        icon_name,
-        icon_data,
-        ..Default::default()
-    }
-    .into()
 }
 
 /// Runs until the tray is quit. Errors if there is no session bus; with no
@@ -491,48 +285,28 @@ pub fn run(
             None => None,
         };
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
-        // The unique name of the watcher's owner last time; None until a tray
-        // host is up. Asked every poll: a host can be replaced at any time.
-        let mut host = None;
+        let mut host = HostTracker::default();
         let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = ticks.tick() => {
                     if let Some(dbus) = &dbus {
-                        let now = watcher_host(dbus).await;
-                        if now.as_ref().map(|(owner, _)| owner) != host.as_ref() {
-                            let comm = now.as_ref().and_then(|(_, comm)| comm.as_deref());
-                            let themed = host_recolours(comm, desktop.as_deref());
+                        let watcher = watcher_host(dbus).await;
+                        if let Some(themed) = host.observe(watcher, desktop.as_deref()) {
                             handle.update(|tray| tray.themed_icons = themed).await;
-                            host = now.map(|(owner, _)| owner);
                         }
                     }
                     let snap = sampler.poll();
                     if handle.update(|tray| tray.set_snapshot(snap)).await.is_none() {
-                        return Err("the tray icon went away".into());
+                        return Err(TRAY_GONE.into());
                     }
                 }
-                Some(job) = queue.recv() => match job {
-                    Job::Update(job) => {
-                        let handle = handle.clone();
-                        tokio::spawn(async move {
-                            let update = jobs::run_update_job(job, &handle).await;
-                            handle.update(|tray| tray.update = update).await;
-                        });
+                Some(job) = queue.recv() => {
+                    if jobs::dispatch(job, &handle).await.is_err() {
+                        return Err(TRAY_GONE.into());
                     }
-                    Job::Driver(job) => {
-                        let Some(python) = handle.update(|tray| tray.python()).await else {
-                            return Err("the tray icon went away".into());
-                        };
-                        let handle = handle.clone();
-                        tokio::spawn(async move {
-                            let driver = jobs::run_driver_job(job, python, &handle).await;
-                            jobs::notify(&driver).await;
-                            handle.update(|tray| tray.driver = driver).await;
-                        });
-                    }
-                },
+                }
             }
         }
     })
@@ -540,43 +314,13 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    use super::testing::all_labels;
+    use super::testing::situations;
     use super::*;
-    use crate::detect::Memory;
     use crate::driver::Verdict;
+    use crate::sample::Proc;
+    use crate::sample::testing::proc_row;
     use std::collections::HashMap;
-
-    fn memory(total: u64, available: u64) -> Memory {
-        Memory { total, available }
-    }
-
-    #[test]
-    fn the_menu_ends_with_quit_and_lists_no_other_apps() {
-        let menu = ksni::Tray::menu(&WatchTray::new(None, None));
-        let [.., MenuItem::Standard(quit)] = menu.as_slice() else {
-            panic!("the menu should end with Quit");
-        };
-        assert_eq!(quit.label, "Quit");
-        fn labels(items: &[MenuItem<WatchTray>], out: &mut Vec<String>) {
-            for item in items {
-                match item {
-                    MenuItem::Standard(item) => out.push(item.label.clone()),
-                    MenuItem::SubMenu(item) => {
-                        out.push(item.label.clone());
-                        labels(&item.submenu, out);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut all = Vec::new();
-        labels(&menu, &mut all);
-        assert!(
-            !all.iter().any(|label| label.contains("vinoPilot")
-                || label.contains(family::SITE_LABEL)
-                || label == "vinoWhisper"),
-            "{all:?}"
-        );
-    }
 
     #[test]
     fn hosts_that_dont_recolour_get_pixmaps() {
@@ -591,16 +335,7 @@ mod tests {
     fn the_icon_follows_the_snapshot() {
         let mut tray = WatchTray::new(None, None);
         assert_eq!(tray.state(), State::Idle);
-        tray.snap.procs.push(crate::sample::Proc {
-            pid: 1,
-            name: "x".into(),
-            project: None,
-            cpu_percent: 0.0,
-            ram_bytes: 0,
-            ram_is_pss: true,
-            npu_open: false,
-            openvino: true,
-        });
+        tray.snap.procs.push(proc_row(1));
         assert_eq!(tray.state(), State::Active);
         // A vino app's helper with no OpenVINO mapped is listed, not active.
         tray.snap.procs[0].openvino = false;
@@ -623,78 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn a_process_row_is_coloured_by_what_it_is_doing() {
-        const GIB: u64 = 1024 * 1024 * 1024;
-        let proc = |pid, cpu_percent, ram_bytes, npu_open| Proc {
-            pid,
-            name: "x".into(),
-            project: None,
-            cpu_percent,
-            ram_bytes,
-            ram_is_pss: true,
-            npu_open,
-            openvino: true,
-        };
-        let mut tray = WatchTray::new(None, None);
-        tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
-        tray.snap.npu_percent = Some(0.0);
-        let waiting = proc(1, 0.2, GIB, true);
-        let working = proc(2, 40.0, GIB / 2, false);
-        let heavy = proc(3, 0.0, 4 * GIB, false);
-        tray.snap.procs = vec![waiting.clone(), working.clone(), heavy.clone()];
-        assert_eq!(tray.proc_state(&waiting), State::Idle);
-        assert_eq!(tray.proc_state(&working), State::Active);
-        assert_eq!(tray.proc_state(&heavy), State::LowMemory);
-        // Holding the NPU counts as work once the NPU is busy.
-        tray.snap.npu_percent = Some(30.0);
-        assert_eq!(tray.proc_state(&waiting), State::Active);
-        // Low RAM points at the biggest process even under the threshold.
-        tray.snap.procs = vec![waiting.clone(), working.clone()];
-        tray.snap.low_memory = true;
-        assert_eq!(tray.proc_state(&waiting), State::LowMemory);
-        assert_eq!(tray.proc_state(&working), State::Active);
-    }
-
-    #[test]
-    fn every_row_has_an_icon() {
-        use ksni::Tray;
-        let mut tray = WatchTray::new(None, None);
-        tray.snap.npu_present = true;
-        tray.snap.procs.push(Proc {
-            pid: 1,
-            name: "x".into(),
-            project: None,
-            cpu_percent: 0.0,
-            ram_bytes: 0,
-            ram_is_pss: true,
-            npu_open: true,
-            openvino: true,
-        });
-        tray.driver = Driver::Checked {
-            verdict: Verdict::Stuck,
-            after_reset: false,
-        };
-        for reset_installed in [false, true] {
-            let mut items = tray.menu();
-            items.extend(tray.driver_items(reset_installed));
-            for item in items {
-                if let MenuItem::Standard(item) = item {
-                    assert!(
-                        !item.icon_name.is_empty() || !item.icon_data.is_empty(),
-                        "{} has no icon",
-                        item.label
-                    );
-                    assert!(
-                        item.enabled || item.label.contains("NPU driver"),
-                        "{} greys its icon",
-                        item.label
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn the_icon_hides_once_the_npu_has_idled_five_minutes() {
         use ksni::Tray;
         let mut tray = WatchTray::new(None, None);
@@ -713,14 +376,11 @@ mod tests {
         assert_eq!(tray.status(), ksni::Status::Passive);
         // A resident app with the NPU idle doesn't bring it back.
         let app = Proc {
-            pid: 1,
             name: "vino_speak".into(),
-            project: None,
             cpu_percent: 3.0,
             ram_bytes: 1,
-            ram_is_pss: true,
             npu_open: true,
-            openvino: true,
+            ..proc_row(1)
         };
         tray.snap.procs.push(app.clone());
         assert_eq!(tray.status(), ksni::Status::Passive);
@@ -734,53 +394,6 @@ mod tests {
         assert_eq!(tray.status(), ksni::Status::NeedsAttention);
         tray.set_snapshot_at(snap(0.0), used + HIDE_AFTER);
         assert_eq!(tray.status(), ksni::Status::Passive);
-    }
-
-    fn labels(tray: &WatchTray) -> Vec<String> {
-        use ksni::Tray;
-        texts(tray.menu())
-    }
-
-    fn update_label(tray: &WatchTray, can_install: bool) -> (String, bool) {
-        match tray.update_item(can_install) {
-            MenuItem::Standard(item) => (item.label, item.enabled),
-            _ => panic!("the update row isn't a plain item"),
-        }
-    }
-
-    #[test]
-    fn the_update_row_says_where_it_is() {
-        let mut tray = WatchTray::new(None, None);
-        assert_eq!(
-            update_label(&tray, true),
-            ("Check for updates".into(), true)
-        );
-        assert!(labels(&tray).contains(&"Check for updates".to_string()));
-        tray.update = Update::Checking;
-        assert_eq!(
-            update_label(&tray, true),
-            ("Checking for updates…".into(), false)
-        );
-        tray.update = Update::Available("v0.5.0".into());
-        assert_eq!(update_label(&tray, true), ("Update to v0.5.0".into(), true));
-        // A build installed by hand still hears about it, and opens the page.
-        assert_eq!(
-            update_label(&tray, false),
-            ("Update to v0.5.0".into(), true)
-        );
-        tray.update = Update::Installing("v0.5.0".into());
-        assert_eq!(
-            update_label(&tray, true),
-            ("Installing v0.5.0…".into(), false)
-        );
-        tray.update = Update::Failed("couldn't reach GitHub".into());
-        assert_eq!(
-            update_label(&tray, true),
-            (
-                "Update failed (couldn't reach GitHub): try again".into(),
-                true
-            )
-        );
     }
 
     #[test]
@@ -802,70 +415,6 @@ mod tests {
         tray.start(INSTALL_UPDATE);
         assert_eq!(queue.try_recv(), Ok(INSTALL_UPDATE));
         assert_eq!(tray.update, Update::Installing("v0.5.0".into()));
-    }
-
-    fn texts(items: Vec<MenuItem<WatchTray>>) -> Vec<String> {
-        items
-            .into_iter()
-            .filter_map(|item| match item {
-                MenuItem::Standard(item) => Some(item.label),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_driver_check_shows_with_an_npu() {
-        let mut tray = WatchTray::new(None, None);
-        assert!(!labels(&tray).contains(&"Check NPU driver".to_string()));
-        tray.snap.npu_present = true;
-        assert!(labels(&tray).contains(&"Check NPU driver".to_string()));
-        // A reload that leaves no device must still offer a retry.
-        tray.snap.npu_present = false;
-        tray.driver = Driver::ResetFailed("modprobe failed".into());
-        assert!(labels(&tray).contains(&"Check NPU driver".to_string()));
-        assert!(labels(&tray).contains(&"NPU reset failed: modprobe failed".to_string()));
-    }
-
-    #[test]
-    fn the_reset_waits_for_the_npu_holders() {
-        let mut tray = WatchTray::new(None, None);
-        tray.driver = Driver::Checked {
-            verdict: Verdict::Stuck,
-            after_reset: false,
-        };
-        assert_eq!(
-            texts(tray.driver_items(false)),
-            [
-                "Check NPU driver",
-                "Reset needs: sudo ./install-npu-reset.sh"
-            ]
-        );
-        let enabled = |tray: &WatchTray| {
-            tray.driver_items(true)
-                .into_iter()
-                .find_map(|item| match item {
-                    MenuItem::Standard(i) if i.label == "Reset NPU driver" => Some(i.enabled),
-                    _ => None,
-                })
-        };
-        assert_eq!(enabled(&tray), Some(true));
-        tray.snap.procs.push(crate::sample::Proc {
-            pid: 7,
-            name: "vino_speak".into(),
-            project: None,
-            cpu_percent: 0.0,
-            ram_bytes: 0,
-            ram_is_pss: true,
-            npu_open: true,
-            openvino: true,
-        });
-        assert_eq!(enabled(&tray), Some(false));
-        let items = texts(tray.driver_items(true));
-        assert_eq!(items[2], "Close these first:");
-        assert!(items[3].starts_with("vino__speak pid 7"), "{}", items[3]);
-        tray.driver = Driver::Resetting;
-        assert_eq!(enabled(&tray), Some(false));
     }
 
     #[test]
@@ -910,150 +459,6 @@ mod tests {
         assert_eq!(tray.python(), PathBuf::from("/bin/sh"));
         let tray = WatchTray::new(Some("/opt/py".into()), None);
         assert_eq!(tray.python(), PathBuf::from("/opt/py"));
-    }
-
-    fn app(pid: u32, name: &str, npu_open: bool) -> Proc {
-        Proc {
-            pid,
-            name: name.into(),
-            project: None,
-            cpu_percent: 12.0,
-            ram_bytes: 512 * 1024 * 1024,
-            ram_is_pss: true,
-            npu_open,
-            openvino: true,
-        }
-    }
-
-    /// Every situation that changes the icon, tooltip or menu.
-    fn situations() -> Vec<(&'static str, WatchTray)> {
-        const GIB: u64 = 1024 * 1024 * 1024;
-        let base = || {
-            let mut tray = WatchTray::new(None, None);
-            tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
-            tray.snap.npu_percent = Some(0.0);
-            tray.snap.npu_present = true;
-            tray
-        };
-        let mut all = vec![("idle", base())];
-        let mut tray = base();
-        tray.snap.npu_percent = None;
-        tray.snap.npu_present = false;
-        all.push(("no NPU", tray));
-        let mut tray = base();
-        tray.snap.procs.push(app(7, "vino_speak", true));
-        tray.snap.npu_percent = Some(40.0);
-        all.push(("active", tray));
-        let mut tray = base();
-        tray.snap.procs.push(app(7, "vino_speak", false));
-        tray.snap.memory = Some(memory(16 * GIB, GIB / 2));
-        tray.snap.low_memory = true;
-        all.push(("low memory", tray));
-        for (name, driver) in [
-            ("checking", Driver::Checking),
-            ("resetting", Driver::Resetting),
-            (
-                "healthy",
-                Driver::Checked {
-                    verdict: Verdict::Healthy,
-                    after_reset: false,
-                },
-            ),
-            (
-                "stuck",
-                Driver::Checked {
-                    verdict: Verdict::Stuck,
-                    after_reset: false,
-                },
-            ),
-            (
-                "stuck after reset",
-                Driver::Checked {
-                    verdict: Verdict::Stuck,
-                    after_reset: true,
-                },
-            ),
-            (
-                "inconclusive",
-                Driver::Checked {
-                    verdict: Verdict::Unknown("no_module named openvino".into()),
-                    after_reset: false,
-                },
-            ),
-            (
-                "reset failed",
-                Driver::ResetFailed("modprobe failed".into()),
-            ),
-        ] {
-            let mut tray = base();
-            tray.driver = driver;
-            all.push((name, tray));
-        }
-        all
-    }
-
-    /// What a screen reader reads: the label without dbusmenu's access-key
-    /// markers.
-    fn spoken(label: &str) -> String {
-        label
-            .replace("__", "\u{0}")
-            .replace('_', "")
-            .replace('\u{0}', "_")
-    }
-
-    /// One item: labelled, shown, and with any underscore kept.
-    fn check(label: &str, visible: bool, out: &mut Vec<String>) {
-        assert!(!spoken(label).trim().is_empty(), "unlabelled item");
-        assert!(visible, "{label:?} is hidden instead of disabled");
-        assert!(
-            !label.replace("__", "").contains('_'),
-            "{label:?} loses an underscore"
-        );
-        out.push(spoken(label));
-    }
-
-    /// Every label in a menu, depth first, checking each item on the way.
-    fn walk(items: &[MenuItem<WatchTray>], out: &mut Vec<String>) {
-        for item in items {
-            match item {
-                MenuItem::Standard(i) => check(&i.label, i.visible, out),
-                MenuItem::Checkmark(i) => check(&i.label, i.visible, out),
-                MenuItem::SubMenu(m) => {
-                    check(&m.label, m.visible, out);
-                    walk(&m.submenu, out);
-                }
-                MenuItem::RadioGroup(g) => g
-                    .options
-                    .iter()
-                    .for_each(|o| check(&o.label, o.visible, out)),
-                MenuItem::Separator => {}
-            }
-        }
-    }
-
-    fn all_labels(tray: &WatchTray) -> Vec<String> {
-        use ksni::Tray;
-        let mut out = Vec::new();
-        walk(&tray.menu(), &mut out);
-        for reset_installed in [false, true] {
-            walk(&tray.driver_items(reset_installed), &mut out);
-        }
-        out
-    }
-
-    #[test]
-    fn every_menu_item_has_a_label() {
-        for (name, tray) in situations() {
-            let labels = all_labels(&tray);
-            assert!(labels.contains(&"Quit".to_string()), "{name}: {labels:?}");
-        }
-        let (_, active) = situations().swap_remove(2);
-        assert!(
-            all_labels(&active)
-                .iter()
-                .any(|l| l.starts_with("vino_speak pid 7")),
-            "the underscore in vino_speak is lost"
-        );
     }
 
     #[test]
@@ -1101,27 +506,5 @@ mod tests {
         assert!(tips["stuck"].contains("stuck"), "{}", tips["stuck"]);
         let names = State::ALL.map(State::icon_name);
         assert!(names[0] != names[1] && names[1] != names[2] && names[0] != names[2]);
-    }
-
-    #[test]
-    fn a_running_check_greys_the_actions_and_says_why() {
-        use ksni::Tray;
-        for (name, tray) in situations() {
-            let busy = tray.driver.busy();
-            let menu = tray.menu();
-            for item in tray.driver_items(true) {
-                if let MenuItem::Standard(i) = item
-                    && i.label == "Check NPU driver"
-                {
-                    assert_eq!(i.enabled, !busy, "{name}");
-                }
-            }
-            if busy {
-                let MenuItem::Standard(first) = &menu[2] else {
-                    panic!("{name}: no driver row")
-                };
-                assert!(first.label.ends_with('…'), "{name}: {}", first.label);
-            }
-        }
     }
 }

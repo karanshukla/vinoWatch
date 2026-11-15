@@ -408,7 +408,28 @@ fn json_string(s: &str) -> String {
 }
 
 #[cfg(test)]
+pub mod testing {
+    use super::Proc;
+
+    /// An OpenVINO process that is idle and holds nothing. Tests override
+    /// the fields they are about.
+    pub fn proc_row(pid: u32) -> Proc {
+        Proc {
+            pid,
+            name: "x".into(),
+            project: None,
+            cpu_percent: 0.0,
+            ram_bytes: 0,
+            ram_is_pss: true,
+            npu_open: false,
+            openvino: true,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::testing::proc_row;
     use super::*;
     use std::fs;
     use std::os::unix::process::CommandExt;
@@ -464,14 +485,9 @@ mod tests {
 
     fn proc_with(project: Option<Project>, cpu_percent: f32, pid: u32) -> Proc {
         Proc {
-            pid,
-            name: "x".into(),
             project,
             cpu_percent,
-            ram_bytes: 0,
-            ram_is_pss: true,
-            npu_open: false,
-            openvino: true,
+            ..proc_row(pid)
         }
     }
 
@@ -575,14 +591,12 @@ mod tests {
         let snap = Snapshot {
             npu_percent: Some(37.25),
             procs: vec![Proc {
-                pid: 4242,
                 name: "python3".into(),
                 project: Some(Project::VinoWhisper),
                 cpu_percent: 12.5,
                 ram_bytes: 812 * 1024 * 1024,
-                ram_is_pss: true,
                 npu_open: true,
-                openvino: true,
+                ..proc_row(4242)
             }],
             memory: Some(Memory {
                 total: 8192 * MIB,
@@ -605,14 +619,8 @@ mod tests {
     #[test]
     fn labels() {
         let p = Proc {
-            pid: 1,
-            name: "x".into(),
-            project: None,
-            cpu_percent: 0.0,
-            ram_bytes: 0,
             ram_is_pss: false,
-            npu_open: false,
-            openvino: true,
+            ..proc_row(1)
         };
         assert_eq!(p.label(), "x pid 1: CPU 0.0%, RAM 0 MiB");
         let helper = Proc {
@@ -657,14 +665,8 @@ mod tests {
     fn ram_label_and_low_memory() {
         let mut snap = Snapshot {
             procs: vec![Proc {
-                pid: 1,
-                name: "x".into(),
-                project: None,
-                cpu_percent: 0.0,
                 ram_bytes: 1536 * 1024 * 1024,
-                ram_is_pss: true,
-                npu_open: false,
-                openvino: true,
+                ..proc_row(1)
             }],
             memory: Some(Memory {
                 total: 8192 * MIB,

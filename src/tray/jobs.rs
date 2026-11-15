@@ -4,12 +4,38 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::WatchTray;
-use super::actions::{Driver, DriverJob, Update, UpdateJob};
+use super::actions::{Driver, DriverJob, Job, Update, UpdateJob};
 use crate::driver::{self, Verdict};
 use crate::update::{self, Found};
 
+/// The tray item is gone, so there is nothing left to run jobs for.
+pub(super) struct TrayGone;
+
+/// Starts `job` on a task of its own and writes where it ended back to the
+/// tray. `WatchTray::start` has already marked it as running.
+pub(super) async fn dispatch(job: Job, handle: &ksni::Handle<WatchTray>) -> Result<(), TrayGone> {
+    let handle = handle.clone();
+    match job {
+        Job::Update(job) => {
+            tokio::spawn(async move {
+                let update = run_update_job(job, &handle).await;
+                handle.update(|tray| tray.update = update).await;
+            });
+        }
+        Job::Driver(job) => {
+            let python = handle.update(|tray| tray.python()).await.ok_or(TrayGone)?;
+            tokio::spawn(async move {
+                let driver = run_driver_job(job, python, &handle).await;
+                notify(&driver).await;
+                handle.update(|tray| tray.driver = driver).await;
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Runs an update job and returns where the update row is afterwards.
-pub(super) async fn run_update_job(job: UpdateJob, handle: &ksni::Handle<WatchTray>) -> Update {
+async fn run_update_job(job: UpdateJob, handle: &ksni::Handle<WatchTray>) -> Update {
     match job {
         UpdateJob::Check => {
             let found = tokio::task::spawn_blocking(|| update::check(env!("CARGO_PKG_VERSION")))
@@ -46,7 +72,7 @@ pub(super) async fn run_update_job(job: UpdateJob, handle: &ksni::Handle<WatchTr
 
 /// Runs a driver job and returns where the driver is afterwards. A reset is
 /// followed by a check.
-pub(super) async fn run_driver_job(
+async fn run_driver_job(
     job: DriverJob,
     python: PathBuf,
     handle: &ksni::Handle<WatchTray>,
@@ -75,7 +101,7 @@ pub(super) async fn run_driver_job(
 
 /// The menu closes on click, so without this a check that ends "OK" looks
 /// like it did nothing. Best effort: no notification server, no popup.
-pub(super) async fn notify(driver: &Driver) {
+async fn notify(driver: &Driver) {
     let Some(summary) = driver.label() else {
         return;
     };
