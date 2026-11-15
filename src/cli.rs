@@ -237,4 +237,88 @@ mod tests {
             assert!(got.is_err());
         }
     }
+
+    /// The help is a contract with whoever reads `--help` in a script or a
+    /// packaging check: a parser swap must print these bytes.
+    #[test]
+    fn the_usage_text_is_pinned() {
+        let expected = format!(
+            "vinoWatch {version}
+Shows what the OpenVINO apps on this machine (vinoWhisper, vinoSpeak, vinoPop,
+vinoAuthFace, vinoSearch, or anything else that loads libopenvino) cost in CPU, RAM and NPU.
+
+Usage: vinowatch [OPTIONS] [SECONDS]
+
+Options:
+  --console   Print to the terminal instead of showing a tray icon
+  --json      Like --console, one JSON object per poll
+  --once      Poll once and exit (implies --console)
+  --warn-below PERCENT
+              Flag low memory when available RAM falls under PERCENT of
+              the total (0 turns it off, default 15)
+  --check-npu Check whether the intel_vpu driver is stuck, then exit: 0 OK,
+              1 stuck, 3 couldn't tell
+  --probe-python PATH
+              The Python (with openvino) that runs that check; by default
+              a running vino app's, else python3
+  --install-icons DIR
+              Write the tray and app icons under DIR/icons/hicolor (DIR is
+              usually ~/.local/share) and exit; install.sh runs this
+  -h, --help  Show this help
+  -V, --version
+              Show the version
+
+SECONDS is the poll interval, 1 to 3600 (default 2).",
+            version = env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(USAGE, expected);
+    }
+
+    #[test]
+    fn every_error_says_what_was_wrong() {
+        for (args, message) in [
+            (&["--nope"][..], "unknown option --nope"),
+            (&["-x"], "unknown option -x"),
+            (&["-1"], "unknown option -1"),
+            (&["-hV"], "unknown option -hV"),
+            (&["--"], "unknown option --"),
+            (&["--warn-below=25"], "unknown option --warn-below=25"),
+            (&["--json=1"], "unknown option --json=1"),
+            (&["--warn-below"], "--warn-below needs a percentage"),
+            (
+                &["--warn-below", "101"],
+                "101 isn't a percentage from 0 to 100",
+            ),
+            (&["--warn-below", "x"], "x isn't a percentage from 0 to 100"),
+            (
+                &["--warn-below", "-5"],
+                "-5 isn't a percentage from 0 to 100",
+            ),
+            (&["--probe-python"], "--probe-python needs a path"),
+            (&["--install-icons"], "--install-icons needs a directory"),
+            (&["0"], "0 isn't a number of seconds from 1 to 3600"),
+            (&["3601"], "3601 isn't a number of seconds from 1 to 3600"),
+            (&["abc"], "abc isn't a number of seconds from 1 to 3600"),
+            (&["2", "3"], "unexpected argument 3"),
+        ] {
+            assert_eq!(p(args), Err(message.to_string()), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_flag_takes_the_next_argument_as_its_value_whatever_it_looks_like() {
+        let Ok(Command::Run { probe_python, .. }) = p(&["--probe-python", "--json"]) else {
+            panic!()
+        };
+        assert_eq!(probe_python, Some("--json".into()));
+    }
+
+    #[test]
+    fn the_last_of_a_repeated_option_wins() {
+        let Ok(Command::Run { warn_below, .. }) = p(&["--warn-below", "5", "--warn-below", "9"])
+        else {
+            panic!()
+        };
+        assert_eq!(warn_below, 9);
+    }
 }

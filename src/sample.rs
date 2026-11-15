@@ -2,10 +2,13 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use serde::Serialize;
+use serde_json::ser::{CharEscape, Formatter};
 use sysinfo::{Pid, Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::detect::{self, Memory, Project};
@@ -294,50 +297,38 @@ impl Sampler {
 impl Snapshot {
     /// One line per poll, for scripts: `jq` reads it, nothing else does.
     pub fn to_json(&self) -> String {
-        let npu = match self.npu_percent {
-            Some(p) => format!("{p:.1}"),
-            None => "null".into(),
-        };
-        let procs: Vec<String> = self
-            .procs
-            .iter()
-            .map(|p| {
-                let project = match p.project {
-                    Some(project) => format!("\"{project}\""),
-                    None => "null".into(),
-                };
-                format!(
-                    "{{\"pid\":{},\"name\":{},\"project\":{},\"cpu_percent\":{:.1},\"ram_mib\":{},\"ram_kind\":\"{}\",\"npu_open\":{},\"openvino\":{}}}",
-                    p.pid,
-                    json_string(&p.name),
-                    project,
-                    p.cpu_percent,
-                    p.ram_bytes / MIB,
-                    if p.ram_is_pss { "pss" } else { "rss" },
-                    p.npu_open,
-                    p.openvino,
-                )
-            })
-            .collect();
         let mib = |bytes: u64| bytes / MIB;
-        let (total, available) = match self.memory {
-            Some(memory) => (
-                mib(memory.total).to_string(),
-                mib(memory.available).to_string(),
-            ),
-            None => ("null".into(), "null".into()),
-        };
-        format!(
-            "{{\"npu_percent\":{npu},\"ram_openvino_mib\":{},\"ram_total_mib\":{total},\"ram_available_mib\":{available},\"ram_limit\":\"{}\",\"low_memory\":{},\"processes\":[{}]}}",
-            mib(self.openvino_bytes()),
-            if self.cgroup_limited {
+        let wire = SnapshotJson {
+            npu_percent: self.npu_percent,
+            ram_openvino_mib: mib(self.openvino_bytes()),
+            ram_total_mib: self.memory.map(|m| mib(m.total)),
+            ram_available_mib: self.memory.map(|m| mib(m.available)),
+            ram_limit: if self.cgroup_limited {
                 "cgroup"
             } else {
                 "host"
             },
-            self.low_memory,
-            procs.join(",")
-        )
+            low_memory: self.low_memory,
+            processes: self
+                .procs
+                .iter()
+                .map(|p| ProcJson {
+                    pid: p.pid,
+                    name: &p.name,
+                    project: p.project.map(|project| project.to_string()),
+                    cpu_percent: p.cpu_percent,
+                    ram_mib: mib(p.ram_bytes),
+                    ram_kind: if p.ram_is_pss { "pss" } else { "rss" },
+                    npu_open: p.npu_open,
+                    openvino: p.openvino,
+                })
+                .collect(),
+        };
+        let mut json = Vec::new();
+        let mut serializer = serde_json::Serializer::with_formatter(&mut json, WireFormat);
+        wire.serialize(&mut serializer)
+            .expect("writing JSON into memory");
+        String::from_utf8(json).expect("serde_json writes UTF-8")
     }
 
     /// What the listed processes hold between them. Exact with PSS; with the
@@ -392,23 +383,88 @@ impl Proc {
     }
 }
 
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+/// The `--json` object, field for field in the order scripts see them.
+#[derive(Serialize)]
+struct SnapshotJson<'a> {
+    npu_percent: Option<f64>,
+    ram_openvino_mib: u64,
+    ram_total_mib: Option<u64>,
+    ram_available_mib: Option<u64>,
+    ram_limit: &'static str,
+    low_memory: bool,
+    processes: Vec<ProcJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct ProcJson<'a> {
+    pid: u32,
+    name: &'a str,
+    project: Option<String>,
+    cpu_percent: f32,
+    ram_mib: u64,
+    ram_kind: &'static str,
+    npu_open: bool,
+    openvino: bool,
+}
+
+/// How `--json` has always written two things serde_json would write its own
+/// way: percentages with one decimal, and every control character as
+/// `\u00XX`. `json_numbers_have_one_decimal_and_sizes_are_whole_mebibytes`
+/// and `json_names_keep_their_escapes` pin both.
+struct WireFormat;
+
+impl Formatter for WireFormat {
+    fn write_f32<W: ?Sized + io::Write>(&mut self, writer: &mut W, value: f32) -> io::Result<()> {
+        write!(writer, "{value:.1}")
+    }
+
+    fn write_f64<W: ?Sized + io::Write>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
+        write!(writer, "{value:.1}")
+    }
+
+    fn write_char_escape<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        escape: CharEscape,
+    ) -> io::Result<()> {
+        let control = match escape {
+            CharEscape::Quote => return writer.write_all(b"\\\""),
+            CharEscape::ReverseSolidus => return writer.write_all(b"\\\\"),
+            CharEscape::Solidus => return writer.write_all(b"/"),
+            CharEscape::Backspace => 0x08,
+            CharEscape::Tab => 0x09,
+            CharEscape::LineFeed => 0x0a,
+            CharEscape::FormFeed => 0x0c,
+            CharEscape::CarriageReturn => 0x0d,
+            CharEscape::AsciiControl(byte) => byte,
+        };
+        write!(writer, "\\u{control:04x}")
+    }
+}
+
+#[cfg(test)]
+pub mod testing {
+    use super::Proc;
+
+    /// An OpenVINO process that is idle and holds nothing. Tests override
+    /// the fields they are about.
+    pub fn proc_row(pid: u32) -> Proc {
+        Proc {
+            pid,
+            name: "x".into(),
+            project: None,
+            cpu_percent: 0.0,
+            ram_bytes: 0,
+            ram_is_pss: true,
+            npu_open: false,
+            openvino: true,
         }
     }
-    out.push('"');
-    out
 }
 
 #[cfg(test)]
 mod tests {
+    use super::testing::proc_row;
     use super::*;
     use std::fs;
     use std::os::unix::process::CommandExt;
@@ -464,14 +520,9 @@ mod tests {
 
     fn proc_with(project: Option<Project>, cpu_percent: f32, pid: u32) -> Proc {
         Proc {
-            pid,
-            name: "x".into(),
             project,
             cpu_percent,
-            ram_bytes: 0,
-            ram_is_pss: true,
-            npu_open: false,
-            openvino: true,
+            ..proc_row(pid)
         }
     }
 
@@ -565,6 +616,16 @@ mod tests {
         assert!(cache.seen.is_empty());
     }
 
+    /// One string, as `--json` writes it.
+    fn json_string(text: &str) -> String {
+        let mut json = Vec::new();
+        text.serialize(&mut serde_json::Serializer::with_formatter(
+            &mut json, WireFormat,
+        ))
+        .unwrap();
+        String::from_utf8(json).unwrap()
+    }
+
     #[test]
     fn json_escapes_what_a_process_name_can_contain() {
         assert_eq!(json_string("a\"b\\c\nd"), r#""a\"b\\c\u000ad""#);
@@ -575,14 +636,12 @@ mod tests {
         let snap = Snapshot {
             npu_percent: Some(37.25),
             procs: vec![Proc {
-                pid: 4242,
                 name: "python3".into(),
                 project: Some(Project::VinoWhisper),
                 cpu_percent: 12.5,
                 ram_bytes: 812 * 1024 * 1024,
-                ram_is_pss: true,
                 npu_open: true,
-                openvino: true,
+                ..proc_row(4242)
             }],
             memory: Some(Memory {
                 total: 8192 * MIB,
@@ -602,17 +661,78 @@ mod tests {
         );
     }
 
+    /// Whatever writes the JSON must keep these bytes: scripts read them.
+    #[test]
+    fn json_numbers_have_one_decimal_and_sizes_are_whole_mebibytes() {
+        let snap = Snapshot {
+            npu_percent: Some(100.0),
+            procs: vec![
+                Proc {
+                    cpu_percent: 0.05,
+                    ram_bytes: MIB - 1,
+                    ram_is_pss: false,
+                    openvino: false,
+                    ..proc_row(1)
+                },
+                Proc {
+                    cpu_percent: 399.96,
+                    ram_bytes: 3 * MIB + 1,
+                    ..proc_row(2)
+                },
+            ],
+            memory: Some(Memory {
+                total: 1000 * MIB,
+                available: 100 * MIB + 5,
+            }),
+            cgroup_limited: true,
+            low_memory: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            snap.to_json(),
+            concat!(
+                r#"{"npu_percent":100.0,"ram_openvino_mib":4,"ram_total_mib":1000,"ram_available_mib":100,"ram_limit":"cgroup","low_memory":true,"processes":["#,
+                r#"{"pid":1,"name":"x","project":null,"cpu_percent":0.1,"ram_mib":0,"ram_kind":"rss","npu_open":false,"openvino":false},"#,
+                r#"{"pid":2,"name":"x","project":null,"cpu_percent":400.0,"ram_mib":3,"ram_kind":"pss","npu_open":false,"openvino":true}]}"#
+            )
+        );
+        let idle = Snapshot {
+            npu_percent: Some(0.0),
+            ..Default::default()
+        };
+        assert!(idle.to_json().starts_with(r#"{"npu_percent":0.0,"#));
+    }
+
+    #[test]
+    fn json_names_keep_their_escapes() {
+        let named = |name: &str| {
+            let snap = Snapshot {
+                procs: vec![Proc {
+                    name: name.into(),
+                    ..proc_row(1)
+                }],
+                ..Default::default()
+            };
+            let json = snap.to_json();
+            let start = json.find(r#""name":"#).unwrap() + 7;
+            let end = json.find(r#","project""#).unwrap();
+            json[start..end].to_string()
+        };
+        assert_eq!(named("a\"b\\c\nd"), r#""a\"b\\c\u000ad""#);
+        assert_eq!(named("tab\there"), r#""tab\u0009here""#);
+        assert_eq!(
+            named("\u{1}\u{1f}\r\u{8}\u{c}"),
+            r#""\u0001\u001f\u000d\u0008\u000c""#
+        );
+        // Not escaped: a slash, DEL, and anything outside ASCII.
+        assert_eq!(named("a/b\u{7f}é\u{2028}🙂"), "\"a/b\u{7f}é\u{2028}🙂\"");
+    }
+
     #[test]
     fn labels() {
         let p = Proc {
-            pid: 1,
-            name: "x".into(),
-            project: None,
-            cpu_percent: 0.0,
-            ram_bytes: 0,
             ram_is_pss: false,
-            npu_open: false,
-            openvino: true,
+            ..proc_row(1)
         };
         assert_eq!(p.label(), "x pid 1: CPU 0.0%, RAM 0 MiB");
         let helper = Proc {
@@ -657,14 +777,8 @@ mod tests {
     fn ram_label_and_low_memory() {
         let mut snap = Snapshot {
             procs: vec![Proc {
-                pid: 1,
-                name: "x".into(),
-                project: None,
-                cpu_percent: 0.0,
                 ram_bytes: 1536 * 1024 * 1024,
-                ram_is_pss: true,
-                npu_open: false,
-                openvino: true,
+                ..proc_row(1)
             }],
             memory: Some(Memory {
                 total: 8192 * MIB,

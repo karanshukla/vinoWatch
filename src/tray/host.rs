@@ -32,11 +32,37 @@ pub(super) fn host_recolours(watcher: Option<&str>, desktop: Option<&str>) -> bo
     watcher.is_some() || !desktop.split(':').any(|d| d == "LXQt" || d == "MATE")
 }
 
-/// The process name of whoever owns the tray watcher now, with its unique bus
-/// name so a change of host is noticed.
-pub(super) async fn watcher_host(
-    dbus: &zbus::fdo::DBusProxy<'_>,
-) -> Option<(String, Option<String>)> {
+/// Who owns `org.kde.StatusNotifierWatcher`: its unique bus name, and its
+/// process name where that could be read.
+pub(super) struct Watcher {
+    pub(super) owner: String,
+    pub(super) comm: Option<String>,
+}
+
+/// Remembers the tray host the icon names were last chosen for. A host can be
+/// replaced at any time, so the loop asks every poll.
+#[derive(Default)]
+pub(super) struct HostTracker {
+    owner: Option<String>,
+}
+
+impl HostTracker {
+    /// `Some(recolours)` when the watcher's owner is not who it was at the
+    /// last call, appearing and going away included; `None` while it stays.
+    pub(super) fn observe(&mut self, now: Option<Watcher>, desktop: Option<&str>) -> Option<bool> {
+        let owner = now.as_ref().map(|watcher| watcher.owner.as_str());
+        if owner == self.owner.as_deref() {
+            return None;
+        }
+        let comm = now.as_ref().and_then(|watcher| watcher.comm.as_deref());
+        let recolours = host_recolours(comm, desktop);
+        self.owner = now.map(|watcher| watcher.owner);
+        Some(recolours)
+    }
+}
+
+/// Asks the bus who owns the tray watcher now.
+pub(super) async fn watcher_host(dbus: &zbus::fdo::DBusProxy<'_>) -> Option<Watcher> {
     let name = zbus::names::BusName::try_from("org.kde.StatusNotifierWatcher").ok()?;
     let owner = dbus.get_name_owner(name).await.ok()?;
     let pid = dbus
@@ -44,7 +70,10 @@ pub(super) async fn watcher_host(
         .await
         .ok();
     let comm = pid.and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok());
-    Some((owner.to_string(), comm))
+    Some(Watcher {
+        owner: owner.to_string(),
+        comm,
+    })
 }
 
 /// ksni treats "_" as an access-key marker and hides it; a doubled one is a
@@ -76,6 +105,47 @@ mod tests {
         assert!(!host_recolours(None, Some("X-Ubuntu:MATE")));
         assert!(host_recolours(None, Some("XFCE")));
         assert!(host_recolours(None, None));
+    }
+
+    fn watcher(owner: &str, comm: &str) -> Option<Watcher> {
+        Some(Watcher {
+            owner: owner.into(),
+            comm: Some(comm.into()),
+        })
+    }
+
+    #[test]
+    fn the_icon_names_are_chosen_again_only_when_the_host_changes() {
+        let mut tracker = HostTracker::default();
+        assert_eq!(
+            tracker.observe(watcher(":1.7", "waybar\n"), None),
+            Some(true)
+        );
+        assert_eq!(tracker.observe(watcher(":1.7", "waybar\n"), None), None);
+        // Another process took the name over.
+        assert_eq!(
+            tracker.observe(watcher(":1.9", "swaybar\n"), None),
+            Some(false)
+        );
+        assert_eq!(tracker.observe(watcher(":1.9", "swaybar\n"), None), None);
+    }
+
+    #[test]
+    fn no_host_yet_is_not_a_change() {
+        let mut tracker = HostTracker::default();
+        assert_eq!(tracker.observe(None, Some("MATE")), None);
+    }
+
+    #[test]
+    fn a_host_going_away_falls_back_to_the_desktop() {
+        let mut tracker = HostTracker::default();
+        tracker.observe(watcher(":1.7", "waybar\n"), Some("MATE"));
+        assert_eq!(tracker.observe(None, Some("MATE")), Some(false));
+        assert_eq!(tracker.observe(None, Some("MATE")), None);
+        assert_eq!(
+            tracker.observe(watcher(":1.8", "mate-panel\n"), Some("MATE")),
+            Some(false)
+        );
     }
 
     #[test]

@@ -10,7 +10,10 @@
 # gets its own HOME.
 set -eu
 
-[ $# -eq 1 ] && [ -x "$1" ] || { echo "usage: $0 path/to/vinowatch" >&2; exit 2; }
+if [ $# -ne 1 ] || [ ! -x "$1" ]; then
+    echo "usage: $0 path/to/vinowatch" >&2
+    exit 2
+fi
 binary=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 repo=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
@@ -178,6 +181,21 @@ sed "s/$tarball/other.tar.gz/" "$work/good.sums" > "$work/other.sums"
 serve "$work/good.tar.gz" "$work/other.sums"
 run
 expect_refused "no entry" "0 times"
+
+# A download of install.sh itself that was cut short runs nothing: every
+# step is in a function, and main is only called on the last line.
+serve "$work/good.tar.gz" "$work/good.sums"
+lines=$(wc -l < "$repo/install.sh")
+for keep in $((lines / 4)) $((lines / 2)) $((lines - 1)); do
+    home=$(mktemp -d "$work/home.XXXXXX")
+    : > "$work/release/urls"
+    head -n "$keep" "$repo/install.sh" |
+        env -i PATH="$work/fakebin:/usr/bin:/bin" HOME="$home" FAKE_RELEASE="$work/release" \
+            sh -s > "$work/out" 2>&1 || true
+    left=$(find "$home" -type f)
+    [ -z "$left" ] || fail "cut at line $keep: installed $left"
+    [ ! -s "$work/release/urls" ] || fail "cut at line $keep: downloaded anyway"
+done
 
 # Run from an unpacked release archive: installs what's next to it.
 home=$(mktemp -d "$work/home.XXXXXX")

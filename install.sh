@@ -25,41 +25,56 @@ hicolor="$data_dir/icons/hicolor"
 # set up later without unpacking the tarball by hand.
 npu_reset="$data_dir/vinowatch"
 
-if [ "${1:-}" = "--uninstall" ]; then
-    systemctl --user disable --now vinowatch.service 2>/dev/null || true
-    rm -f "$bin" "$upgrade" "$unit_dir/vinowatch.service" "$autostart" \
-        "$launcher" \
-        "$hicolor/scalable/apps/vinowatch.svg" \
-        "$hicolor/symbolic/apps/vinowatch-symbolic.svg" \
-        "$hicolor/symbolic/apps/vinowatch-active-symbolic.svg" \
-        "$hicolor/symbolic/apps/vinowatch-low-memory-symbolic.svg" \
-        "$npu_reset/install-npu-reset.sh" "$npu_reset/vino-npu-reset.service" \
-        "$npu_reset/vino-npu-reset.rules"
-    rmdir "$npu_reset" 2>/dev/null || true
-    systemctl --user daemon-reload 2>/dev/null || true
-    echo "Removed vinoWatch."
-    # The root half lives in /etc, out of this script's reach.
-    if [ -f /etc/systemd/system/vino-npu-reset.service ]; then
-        echo "The NPU reset unit is still installed. To remove it:"
-        echo "  sudo rm -f /etc/systemd/system/vino-npu-reset.service /etc/polkit-1/rules.d/50-vino-npu-reset.rules"
-        echo "  sudo systemctl daemon-reload"
+# Everything runs from main, called on the last line, so a download cut
+# short can't run half of this script.
+main() {
+    if [ "${1:-}" = "--uninstall" ]; then
+        systemctl --user disable --now vinowatch.service 2>/dev/null || true
+        rm -f "$bin" "$upgrade" "$unit_dir/vinowatch.service" "$autostart" \
+            "$launcher" \
+            "$hicolor/scalable/apps/vinowatch.svg" \
+            "$hicolor/symbolic/apps/vinowatch-symbolic.svg" \
+            "$hicolor/symbolic/apps/vinowatch-active-symbolic.svg" \
+            "$hicolor/symbolic/apps/vinowatch-low-memory-symbolic.svg" \
+            "$npu_reset/install-npu-reset.sh" "$npu_reset/vino-npu-reset.service" \
+            "$npu_reset/vino-npu-reset.rules"
+        rmdir "$npu_reset" 2>/dev/null || true
+        systemctl --user daemon-reload 2>/dev/null || true
+        echo "Removed vinoWatch."
+        # The root half lives in /etc, out of this script's reach.
+        if [ -f /etc/systemd/system/vino-npu-reset.service ]; then
+            echo "The NPU reset unit is still installed. To remove it:"
+            echo "  sudo rm -f /etc/systemd/system/vino-npu-reset.service /etc/polkit-1/rules.d/50-vino-npu-reset.rules"
+            echo "  sudo systemctl daemon-reload"
+        fi
+        exit 0
     fi
-    exit 0
-fi
 
-# Piped into sh, $0 is the shell rather than this file, and dirname "$0" is
-# whatever directory curl ran in. Only trust the files next to this script
-# when it really is one: a checkout, or an unpacked release archive.
-here=
-if [ -f "$0" ] && [ "$(basename "$0")" = install.sh ]; then
-    dir=$(cd "$(dirname "$0")" && pwd)
-    if grep -qx 'name = "vinowatch"' "$dir/Cargo.toml" 2>/dev/null ||
-        { [ -f "$dir/vinowatch" ] && [ -f "$dir/vinowatch.service" ]; }; then
-        here=$dir
+    find_source
+    [ -n "$here" ] || download_release
+    build_or_reuse
+    install_files
+    start_with_the_session
+}
+
+# Sets $here to the checkout or unpacked release this script sits in, or
+# leaves it empty.
+find_source() {
+    # Piped into sh, $0 is the shell rather than this file, and dirname "$0" is
+    # whatever directory curl ran in. Only trust the files next to this script
+    # when it really is one: a checkout, or an unpacked release archive.
+    here=
+    if [ -f "$0" ] && [ "$(basename "$0")" = install.sh ]; then
+        dir=$(cd "$(dirname "$0")" && pwd)
+        if grep -qx 'name = "vinowatch"' "$dir/Cargo.toml" 2>/dev/null ||
+            { [ -f "$dir/vinowatch" ] && [ -f "$dir/vinowatch.service" ]; }; then
+            here=$dir
+        fi
     fi
-fi
+}
 
-if [ -z "$here" ]; then
+# Downloads and verifies the release, and points $here at it.
+download_release() {
     case "$(uname -m)" in
         x86_64) arch=x86_64 ;;
         aarch64 | arm64) arch=aarch64 ;;
@@ -105,61 +120,66 @@ if [ -z "$here" ]; then
     fi
     tar -xzf "$tmp/$tarball" -C "$tmp"
     here="$tmp/vinowatch"
-fi
+}
 
-# Release archives ship the binary. A checkout has Cargo.toml instead.
-if [ -f "$here/Cargo.toml" ]; then
-    built="$here/target/release/vinowatch"
-    if command -v cargo >/dev/null 2>&1; then
-        cargo build --release --locked --manifest-path "$here/Cargo.toml"
-    elif [ -x "$built" ]; then
-        # An image-based host (Silverblue, Kinoite, Bazzite, Aeon) keeps
-        # toolchains in a toolbox; installing still has to happen out here,
-        # where systemctl --user reaches the session's user manager.
-        echo "No cargo here; installing the build already in target/release."
+# Sets $built to the binary to install.
+build_or_reuse() {
+    # Release archives ship the binary. A checkout has Cargo.toml instead.
+    if [ -f "$here/Cargo.toml" ]; then
+        built="$here/target/release/vinowatch"
+        if command -v cargo >/dev/null 2>&1; then
+            cargo build --release --locked --manifest-path "$here/Cargo.toml"
+        elif [ -x "$built" ]; then
+            # An image-based host (Silverblue, Kinoite, Bazzite, Aeon) keeps
+            # toolchains in a toolbox; installing still has to happen out here,
+            # where systemctl --user reaches the session's user manager.
+            echo "No cargo here; installing the build already in target/release."
+        else
+            echo "No cargo here to build vinowatch with. Either:" >&2
+            echo "  - install the latest release instead (no toolchain needed):" >&2
+            echo "      curl -fsSL https://github.com/$repo/releases/latest/download/install.sh | sh" >&2
+            echo "  - or build in a toolbox/distrobox, then rerun this on the host:" >&2
+            echo "      toolbox run cargo build --release --locked && ./install.sh" >&2
+            exit 1
+        fi
     else
-        echo "No cargo here to build vinowatch with. Either:" >&2
-        echo "  - install the latest release instead (no toolchain needed):" >&2
-        echo "      curl -fsSL https://github.com/$repo/releases/latest/download/install.sh | sh" >&2
-        echo "  - or build in a toolbox/distrobox, then rerun this on the host:" >&2
-        echo "      toolbox run cargo build --release --locked && ./install.sh" >&2
-        exit 1
+        built="$here/vinowatch"
     fi
-else
-    built="$here/vinowatch"
-fi
+}
 
-# install(1) replaces the file in place, including an old symlink, and a
-# running tray keeps its old inode until the restart below.
-install -Dm755 "$built" "$bin"
-install -Dm644 "$here/vinowatch.service" "$unit_dir/vinowatch.service"
-# This script again, as the tray's "Update to vN": run with VINOWATCH_VERSION
-# set, from ~/.local/bin, it takes the download path above. Only from a
-# release: a build from a checkout keeps itself, and the tray links to the
-# release page instead. An older copy would put the release back over it.
-if [ -f "$here/Cargo.toml" ]; then
-    rm -f "$upgrade"
-else
-    install -Dm755 "$here/install.sh" "$upgrade"
-fi
-# install-npu-reset.sh needs its unit and rule beside it. All three come from
-# the checkout or the tarball checked against SHA256SUMS above; 0.1.0 had
-# none of them.
-if [ -f "$here/install-npu-reset.sh" ] && [ -f "$here/vino-npu-reset.service" ] &&
-    [ -f "$here/vino-npu-reset.rules" ]; then
-    install -Dm755 "$here/install-npu-reset.sh" "$npu_reset/install-npu-reset.sh"
-    install -Dm644 "$here/vino-npu-reset.service" "$npu_reset/vino-npu-reset.service"
-    install -Dm644 "$here/vino-npu-reset.rules" "$npu_reset/vino-npu-reset.rules"
-fi
-# The tray draws its own icons too, so a build without this flag (an older
-# release, or --no-default-features) still shows one.
-if ! "$bin" --install-icons "$data_dir" >/dev/null 2>&1; then
-    echo "This vinowatch can't install its icons; the tray will draw its own."
-fi
-# Plasma keeps icons it has looked up in memory, so an updated icon wouldn't
-# show until the next login. This is the signal an icon theme change sends.
-dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 \
-    2>/dev/null || true
+install_files() {
+    # install(1) replaces the file in place, including an old symlink, and a
+    # running tray keeps its old inode until the restart below.
+    install -Dm755 "$built" "$bin"
+    install -Dm644 "$here/vinowatch.service" "$unit_dir/vinowatch.service"
+    # This script again, as the tray's "Update to vN": run with VINOWATCH_VERSION
+    # set, from ~/.local/bin, it takes the download path above. Only from a
+    # release: a build from a checkout keeps itself, and the tray links to the
+    # release page instead. An older copy would put the release back over it.
+    if [ -f "$here/Cargo.toml" ]; then
+        rm -f "$upgrade"
+    else
+        install -Dm755 "$here/install.sh" "$upgrade"
+    fi
+    # install-npu-reset.sh needs its unit and rule beside it. All three come from
+    # the checkout or the tarball checked against SHA256SUMS above; 0.1.0 had
+    # none of them.
+    if [ -f "$here/install-npu-reset.sh" ] && [ -f "$here/vino-npu-reset.service" ] &&
+        [ -f "$here/vino-npu-reset.rules" ]; then
+        install -Dm755 "$here/install-npu-reset.sh" "$npu_reset/install-npu-reset.sh"
+        install -Dm644 "$here/vino-npu-reset.service" "$npu_reset/vino-npu-reset.service"
+        install -Dm644 "$here/vino-npu-reset.rules" "$npu_reset/vino-npu-reset.rules"
+    fi
+    # The tray draws its own icons too, so a build without this flag (an older
+    # release, or --no-default-features) still shows one.
+    if ! "$bin" --install-icons "$data_dir" >/dev/null 2>&1; then
+        echo "This vinowatch can't install its icons; the tray will draw its own."
+    fi
+    # Plasma keeps icons it has looked up in memory, so an updated icon wouldn't
+    # show until the next login. This is the signal an icon theme change sends.
+    dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 \
+        2>/dev/null || true
+}
 
 # launcher_entry EXEC: the app launcher's entry, as the other vino apps have.
 launcher_entry() {
@@ -179,19 +199,20 @@ StartupNotify=false
 EOF
 }
 
-if systemctl --user daemon-reload 2>/dev/null; then
-    systemctl --user enable vinowatch.service
-    # Restart, not start: an idle tray is hidden, and starting a running unit
-    # does nothing, so the launcher would look broken. A fresh tray stays in
-    # view for its first idle minutes.
-    launcher_entry "systemctl --user restart vinowatch.service"
-    # XFCE, LXQt, MATE, Budgie and Cinnamon before 6.8 never start
-    # graphical-session.target, so the unit's WantedBy doesn't fire there; their
-    # session managers run XDG autostart entries instead. X-systemd-skip keeps
-    # systemd's autostart generator (GNOME, Plasma, COSMIC, uwsm) off it, as
-    # the target starts the unit there. Starting a running unit does nothing.
-    mkdir -p "$(dirname "$autostart")"
-    cat >"$autostart" <<'EOF'
+start_with_the_session() {
+    if systemctl --user daemon-reload 2>/dev/null; then
+        systemctl --user enable vinowatch.service
+        # Restart, not start: an idle tray is hidden, and starting a running unit
+        # does nothing, so the launcher would look broken. A fresh tray stays in
+        # view for its first idle minutes.
+        launcher_entry "systemctl --user restart vinowatch.service"
+        # XFCE, LXQt, MATE, Budgie and Cinnamon before 6.8 never start
+        # graphical-session.target, so the unit's WantedBy doesn't fire there; their
+        # session managers run XDG autostart entries instead. X-systemd-skip keeps
+        # systemd's autostart generator (GNOME, Plasma, COSMIC, uwsm) off it, as
+        # the target starts the unit there. Starting a running unit does nothing.
+        mkdir -p "$(dirname "$autostart")"
+        cat >"$autostart" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=vinoWatch
@@ -201,33 +222,36 @@ Icon=vinowatch
 NoDisplay=true
 X-systemd-skip=true
 EOF
-    # Only start it when a graphical session is up; otherwise it starts at the next login.
-    if systemctl --user is-active --quiet graphical-session.target; then
-        systemctl --user restart vinowatch.service
-        echo "Installed. The tray starts with your graphical session."
-    elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
-        # A Wayland session that never starts graphical-session.target: sway or
-        # Hyprland launched without uwsm or sway-systemd. The unit's WantedBy
-        # never fires there, so start it now and say how to make it stick.
-        systemctl --user restart vinowatch.service
-        echo "Installed and started. Your session doesn't start graphical-session.target,"
-        echo "so add this to your compositor's config to start the tray at each login:"
-        case "${XDG_CURRENT_DESKTOP:-}" in
-            *Hyprland*) echo "  exec-once = systemctl --user start vinowatch.service" ;;
-            *sway*) echo "  exec systemctl --user start vinowatch.service" ;;
-            *) echo "  systemctl --user start vinowatch.service" ;;
-        esac
-    elif [ -n "${DISPLAY:-}" ]; then
-        # An X11 session without the target: XFCE, MATE, LXQt and the like.
-        # The autostart entry covers the next login.
-        systemctl --user restart vinowatch.service
-        echo "Installed and started. It starts at each login from $autostart."
+        # Only start it when a graphical session is up; otherwise it starts at the next login.
+        if systemctl --user is-active --quiet graphical-session.target; then
+            systemctl --user restart vinowatch.service
+            echo "Installed. The tray starts with your graphical session."
+        elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
+            # A Wayland session that never starts graphical-session.target: sway or
+            # Hyprland launched without uwsm or sway-systemd. The unit's WantedBy
+            # never fires there, so start it now and say how to make it stick.
+            systemctl --user restart vinowatch.service
+            echo "Installed and started. Your session doesn't start graphical-session.target,"
+            echo "so add this to your compositor's config to start the tray at each login:"
+            case "${XDG_CURRENT_DESKTOP:-}" in
+                *Hyprland*) echo "  exec-once = systemctl --user start vinowatch.service" ;;
+                *sway*) echo "  exec systemctl --user start vinowatch.service" ;;
+                *) echo "  systemctl --user start vinowatch.service" ;;
+            esac
+        elif [ -n "${DISPLAY:-}" ]; then
+            # An X11 session without the target: XFCE, MATE, LXQt and the like.
+            # The autostart entry covers the next login.
+            systemctl --user restart vinowatch.service
+            echo "Installed and started. It starts at each login from $autostart."
+        else
+            echo "Installed. The tray starts with your graphical session."
+        fi
     else
-        echo "Installed. The tray starts with your graphical session."
+        # ~/.local/bin isn't on every session's PATH, hence the full path.
+        launcher_entry "\"$bin\""
+        echo "Installed $bin. No systemd user session here, so run vinowatch yourself,"
+        echo "from a terminal or the app launcher."
     fi
-else
-    # ~/.local/bin isn't on every session's PATH, hence the full path.
-    launcher_entry "\"$bin\""
-    echo "Installed $bin. No systemd user session here, so run vinowatch yourself,"
-    echo "from a terminal or the app launcher."
-fi
+}
+
+main "$@"
