@@ -15,10 +15,12 @@ exclude = [".github/"]
 default = ["tray"]
 # The system tray front-end (StatusNotifierItem over D-Bus). Without it the
 # binary is console-only and has no D-Bus dependency.
-tray = ["dep:ksni", "dep:tokio", "dep:zbus", "dep:vino-ui"]
+tray = ["dep:ksni", "dep:png", "dep:tokio", "dep:zbus", "dep:vino-ui"]
 
 [dependencies]
 ksni = { version = "0.3.6", optional = true }
+# The PNG meters on the tray's menu rows (src/png.rs).
+png = { version = "0.18.1", optional = true }
 # The vinoPilot apps and the tray menu icons every vinoPilot tray shares; no egui.
 vino-ui = { package = "vino-user-interface", version = "0.5.0", default-features = false, optional = true }
 # The --json output. serde is in the tray's tree already, through zbus.
@@ -34,8 +36,6 @@ zbus = { version = "5", optional = true, default-features = false, features = ["
 [dev-dependencies]
 # Scratch directories for the fake /proc, sysfs and cgroup roots.
 tempfile = "3.27"
-# Decodes what src/png.rs encodes, so "a valid PNG" is a test and not a claim.
-png = "0.18.1"
 
 [profile.release]
 lto = true
