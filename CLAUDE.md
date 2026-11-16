@@ -16,7 +16,7 @@ Guidance for Claude Code when working in this repository.
 - `src/driver.rs`: the stuck-`intel_vpu` probe (runs Python, as vinoPop's `npu_canary.py`) and the reload via `vino-npu-reset.service`. Root half: `install-npu-reset.sh`, `vino-npu-reset.service`, `vino-npu-reset.rules`.
 - `src/cli.rs`: flags. The usage text and every error message are pinned by its tests.
 - `src/update.rs`: the update check and install, through `systemd-run --user`; `found_in` is the pure half.
-- `docs/`: user docs the README links to. Measurements that used to sit in comments live there, with their dates. `docs/hand-written.md` is for contributors: what `serde_json`, `png` and `lexopt` cost when tried, and why `png.rs` and the argument parser stayed.
+- `docs/`: user docs the README links to. Measurements that used to sit in comments live there, with their dates. `docs/hand-written.md` is for contributors: what `serde_json`, `png` and `lexopt` cost when tried, and why the argument parser stayed. `png.rs` is a thin wrapper over the `png` crate.
 
 ## Commands
 
