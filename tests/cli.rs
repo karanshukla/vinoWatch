@@ -23,14 +23,17 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// `dev` unless the build was stamped, as release CI does
+/// (pinned by `version::tests::a_release_build_reports_its_version`).
+fn expected_version() -> &'static str {
+    option_env!("VINOWATCH_VERSION").unwrap_or("dev")
+}
+
 #[test]
 fn version_and_help() {
     let out = vinowatch(&["--version"]);
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(
-        stdout(&out),
-        format!("vinowatch {}\n", env!("CARGO_PKG_VERSION"))
-    );
+    assert_eq!(stdout(&out), format!("vinowatch {}\n", expected_version()));
     let out = vinowatch(&["-h"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(stdout(&out).contains("Usage: vinowatch [OPTIONS] [SECONDS]"));

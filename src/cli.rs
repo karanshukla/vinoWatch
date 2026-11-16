@@ -3,10 +3,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const USAGE: &str = concat!(
-    "vinoWatch ",
-    env!("CARGO_PKG_VERSION"),
-    "\nShows what the OpenVINO apps on this machine (vinoWhisper, vinoSpeak, vinoPop,\n\
+use crate::version::VERSION;
+
+/// The help text, headed by the build's version.
+pub fn usage() -> String {
+    format!("vinoWatch {VERSION}\n{USAGE_BODY}")
+}
+
+const USAGE_BODY: &str = "Shows what the OpenVINO apps on this machine (vinoWhisper, vinoSpeak, vinoPop,\n\
      vinoAuthFace, vinoSearch, or anything else that loads libopenvino) cost in CPU, RAM and NPU.\n\n\
      Usage: vinowatch [OPTIONS] [SECONDS]\n\n\
      Options:\n  \
@@ -19,8 +23,7 @@ pub const USAGE: &str = concat!(
        --install-icons DIR\n              Write the tray and app icons under DIR/icons/hicolor (DIR is\n              usually ~/.local/share) and exit; install.sh runs this\n  \
        -h, --help  Show this help\n  \
        -V, --version\n              Show the version\n\n\
-     SECONDS is the poll interval, 1 to 3600 (default 2)."
-);
+     SECONDS is the poll interval, 1 to 3600 (default 2).";
 
 #[derive(Debug, PartialEq)]
 pub enum Mode {
@@ -270,9 +273,9 @@ Options:
               Show the version
 
 SECONDS is the poll interval, 1 to 3600 (default 2).",
-            version = env!("CARGO_PKG_VERSION")
+            version = VERSION
         );
-        assert_eq!(USAGE, expected);
+        assert_eq!(usage(), expected);
     }
 
     #[test]

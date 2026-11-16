@@ -38,7 +38,7 @@ pub(super) async fn dispatch(job: Job, handle: &ksni::Handle<WatchTray>) -> Resu
 async fn run_update_job(job: UpdateJob, handle: &ksni::Handle<WatchTray>) -> Update {
     match job {
         UpdateJob::Check => {
-            let found = tokio::task::spawn_blocking(|| update::check(env!("CARGO_PKG_VERSION")))
+            let found = tokio::task::spawn_blocking(|| update::check(crate::version::VERSION))
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()));
             match found {
