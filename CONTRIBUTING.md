@@ -30,6 +30,7 @@ If you touched `install.sh`, also run `cargo build && tests/install-e2e.sh targe
 - A change to how processes are found or named needs a test with a fake `/proc` entry (see `src/detect.rs`, and `fake_openvino_process` in `src/sample.rs`).
 - A change that can only be verified on an NPU: say so in the PR instead of faking a test.
 - Keep code comments to the *why*, one line. A rule gets a test named after it instead of a comment; measurements go in `docs/` with their date.
+- Before swapping hand-written code for a crate, read [docs/hand-written.md](docs/hand-written.md): three were measured, one was taken.
 - Commits are conventional (`feat:`, `fix:`, `docs:`, ...); the changelog is generated from them with `git cliff`.
 - Every Actions `uses:` is pinned to a commit SHA with a version comment.
 - A `deny.toml` advisory ignore needs a written reason next to it.

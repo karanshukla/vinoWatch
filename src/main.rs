@@ -142,17 +142,21 @@ fn console(json: bool, once: bool, interval: Duration, warn_below: u8) {
         if json {
             println!("{}", snap.to_json());
         } else {
-            println!("{}", snap.npu_label());
-            println!("{}", snap.ram_label());
-            if snap.procs.is_empty() {
-                println!("  no OpenVINO processes found");
-            }
-            for p in &snap.procs {
-                println!("  {}", p.label());
-            }
+            print_poll(&snap);
         }
         if once {
             return;
         }
+    }
+}
+
+fn print_poll(snap: &sample::Snapshot) {
+    println!("{}", snap.npu_label());
+    println!("{}", snap.ram_label());
+    if snap.procs.is_empty() {
+        println!("  no OpenVINO processes found");
+    }
+    for listed in &snap.procs {
+        println!("  {}", listed.label());
     }
 }

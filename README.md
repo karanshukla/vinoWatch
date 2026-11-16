@@ -95,6 +95,7 @@ sudo ~/.local/share/vinowatch/install-npu-reset.sh
 | [Desktops](docs/desktops.md) | tray hosts per desktop, sway and Hyprland start-up, X11 panels, notifications |
 | [Distros](docs/distros.md) | what the install needs and writes, immutable distros, SteamOS, NixOS |
 | [Stuck NPU driver](docs/npu-driver.md) | the check, the reset and its root step |
+| [Hand-written code](docs/hand-written.md) | what `serde_json`, `png` and `lexopt` cost when tried |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | setup, tests, adding another vino app, releases |
 | [SECURITY.md](SECURITY.md) | security notes |
 

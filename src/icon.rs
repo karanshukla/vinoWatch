@@ -71,18 +71,17 @@ enum Part {
     Level,
 }
 
-// vinoWhisper's palette (gui/src/paint.rs), as in vinoAuthFace.
+// vinoWhisper's palette (gui/src/paint.rs), as in vinoAuthFace. The contrast
+// each colour has to keep is pinned by the `*_on_any_panel` and
+// `the_symbolic_icons_show_on_light_and_dark_panels` tests.
 const TILE: Rgba = Rgba(14, 14, 16, 255);
 const EDGE: Rgba = Rgba(255, 255, 255, 46);
 const WHITE: Rgba = Rgba(250, 250, 250, 255);
-// Opaque enough that a meter's empty length shows against the tile (3:1),
-// and faint enough that its green level still shows against the track (3:1).
 const TRACK: Rgba = Rgba(160, 164, 172, 140);
 const GREEN: Rgba = Rgba(86, 204, 120, 255);
 const AMBER: Rgba = Rgba(245, 184, 66, 255);
 
-// The symbolic icon sits straight on the panel, light or dark, so its accents
-// are darker shades of the two above that keep 3:1 against both.
+// Darker than GREEN and AMBER: the symbolic icon has no tile under it.
 const TRAY_GREEN: Rgba = Rgba(40, 150, 80, 255);
 const TRAY_AMBER: Rgba = Rgba(184, 115, 0, 255);
 
@@ -162,6 +161,15 @@ fn opacity(Rgba(_, _, _, a): Rgba) -> String {
     format!("{:.2}", f32::from(a) / 255.0)
 }
 
+/// A `fill` attribute, with `fill-opacity` only where the colour needs it.
+fn svg_fill(color: Rgba) -> String {
+    if color.3 == u8::MAX {
+        format!(r#"fill="{}""#, hex(color))
+    } else {
+        format!(r#"fill="{}" fill-opacity="{}""#, hex(color), opacity(color))
+    }
+}
+
 /// The installed app icon (`vinowatch.svg`): the active state, with the
 /// viewBox cropped to a 2-unit margin. The 64-unit grid's 4-unit margin left
 /// the tile visibly smaller than other apps' icons in a task manager; the tray
@@ -183,13 +191,7 @@ pub fn app_svg() -> String {
         LARGE.edge
     )));
     for &(shape, part) in LARGE.marks {
-        let color = paint(State::Active, part);
-        let paint = if color.3 == 255 {
-            format!(r#"fill="{}""#, hex(color))
-        } else {
-            format!(r#"fill="{}" fill-opacity="{}""#, hex(color), opacity(color))
-        };
-        line(shape.svg_rect(&paint));
+        line(shape.svg_rect(&svg_fill(paint(State::Active, part))));
     }
     svg.push_str("</svg>\n");
     svg
@@ -235,17 +237,18 @@ pub fn symbolic_svg(state: State) -> String {
          <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text {{ color: #232629; }}</style>\n  \
          <path class=\"ColorScheme-Text\" style=\"fill:currentColor\" fill-rule=\"evenodd\" d=\"{FRAME}\"/>\n",
     );
-    for (path, style) in [
-        (text, "fill:currentColor".to_string()),
-        (dim, "fill:currentColor;fill-opacity:0.6".to_string()),
-        (accent, format!("fill:{accent_fill}")),
+    const THEMED: &str = r#" class="ColorScheme-Text""#;
+    const FIXED: &str = "";
+    for (path, class, style) in [
+        (text, THEMED, "fill:currentColor".to_string()),
+        (
+            dim,
+            THEMED,
+            "fill:currentColor;fill-opacity:0.6".to_string(),
+        ),
+        (accent, FIXED, format!("fill:{accent_fill}")),
     ] {
         if !path.is_empty() {
-            let class = if style.contains("currentColor") {
-                r#" class="ColorScheme-Text""#
-            } else {
-                ""
-            };
             svg.push_str(&format!(
                 "  <path{class} style=\"{style}\" d=\"{path}\"/>\n"
             ));
@@ -284,9 +287,23 @@ pub fn install(data: &Path) -> io::Result<Vec<PathBuf>> {
         .collect()
 }
 
-/// Every size a tray might ask for, for one state.
+/// Every size a tray might ask for.
+const TRAY_SIZES: [u32; 6] = [16, 22, 24, 32, 48, 64];
+
+/// From this size up the 64-unit design is drawn; below it the 16-unit one,
+/// whose lines land on whole pixels.
+const LARGE_GRID_FROM: u32 = 32;
+
+fn grid_for(size: u32) -> &'static Grid {
+    if size < LARGE_GRID_FROM {
+        &SMALL
+    } else {
+        &LARGE
+    }
+}
+
 pub fn tray_icons(state: State) -> Vec<ksni::Icon> {
-    [16, 22, 24, 32, 48, 64]
+    TRAY_SIZES
         .into_iter()
         .map(|size| tray_icon(state, size))
         .collect()
@@ -295,7 +312,7 @@ pub fn tray_icons(state: State) -> Vec<ksni::Icon> {
 fn tray_icon(state: State, size: u32) -> ksni::Icon {
     let mut pixels = vec![0u8; (size * size * 4) as usize];
     let mut canvas = Canvas::new(&mut pixels, size, size);
-    let grid = if size < 32 { &SMALL } else { &LARGE };
+    let grid = grid_for(size);
     draw(&mut canvas, grid, state, size as f32);
     ksni::Icon {
         width: size as i32,
@@ -342,18 +359,23 @@ fn meters(levels: &[f32]) -> Vec<(Shape, Option<Shape>)> {
     tracks
         .into_iter()
         .zip(levels)
-        .map(|(track, &level)| {
-            // In 2-unit steps, so a level that barely moves doesn't redraw the
-            // menu; anything above zero shows at least as a dot.
-            let steps = track.w / 2.0;
-            let filled = (level.clamp(0.0, 1.0) * steps).round() / steps * track.w;
-            let level = (level > 0.0).then(|| Shape {
-                w: filled.max(track.h),
-                ..track
-            });
-            (track, level)
-        })
+        .map(|(track, &level)| (track, filled_part(track, level)))
         .collect()
+}
+
+/// A level moves in steps this wide, so one that barely changes draws the
+/// same icon and the menu isn't redrawn (`row_meters_follow_their_levels`).
+const LEVEL_STEP: f32 = 2.0;
+
+/// The filled start of `track` for a level of 0 to 1: nothing at zero, and
+/// otherwise at least a round dot.
+fn filled_part(track: Shape, level: f32) -> Option<Shape> {
+    let steps = track.w / LEVEL_STEP;
+    let filled = (level.clamp(0.0, 1.0) * steps).round() / steps * track.w;
+    (level > 0.0).then(|| Shape {
+        w: filled.max(track.h),
+        ..track
+    })
 }
 
 /// A menu row's icon, as PNG: the tile with one meter per level, filled in
@@ -613,7 +635,7 @@ mod tests {
         for state in State::ALL {
             for icon in tray_icons(state) {
                 let size = icon.width as u32;
-                let grid = if size < 32 { &SMALL } else { &LARGE };
+                let grid = grid_for(size);
                 let pixel = |x: u32, y: u32| {
                     let i = ((y * size + x) * 4) as usize;
                     let [a, r, g, b] = icon.data[i..i + 4] else {
