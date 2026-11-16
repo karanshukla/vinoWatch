@@ -82,7 +82,7 @@ impl WatchTray {
             items.push(MenuItem::Separator);
         }
         items.push(note(
-            format!("vinoWatch {}", env!("CARGO_PKG_VERSION")),
+            format!("vinoWatch {}", crate::version::VERSION),
             RowIcon::Named("vinowatch"),
         ));
         items.push(self.update_item(installed.upgrade_command));
@@ -503,6 +503,7 @@ mod tests {
     #[test]
     fn the_menu_reads_status_then_processes_then_actions_then_about() {
         let speak = "vino__speak pid 7: CPU 12.0%, RAM 512 MiB, NPU open";
+        let version = format!("vinoWatch {}", crate::version::VERSION);
         assert_eq!(
             texts(active().build_menu(EVERYTHING)),
             [
@@ -513,7 +514,7 @@ mod tests {
                 "Reset NPU driver",
                 "Close these first:",
                 speak,
-                concat!("vinoWatch ", env!("CARGO_PKG_VERSION")),
+                version.as_str(),
                 "Check for updates",
                 "Quit",
             ]

@@ -17,6 +17,7 @@ mod sample;
 mod tray;
 #[cfg(feature = "tray")]
 mod update;
+mod version;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -28,8 +29,8 @@ use sample::Sampler;
 
 fn main() -> ExitCode {
     match cli::parse(std::env::args().skip(1)) {
-        Ok(Command::Help) => println!("{}", cli::USAGE),
-        Ok(Command::Version) => println!("vinowatch {}", env!("CARGO_PKG_VERSION")),
+        Ok(Command::Help) => println!("{}", cli::usage()),
+        Ok(Command::Version) => println!("vinowatch {}", version::VERSION),
         #[cfg(feature = "tray")]
         Ok(Command::InstallIcons(dir)) => match icon::install(&dir) {
             Ok(paths) => paths.iter().for_each(|p| println!("{}", p.display())),
@@ -51,7 +52,7 @@ fn main() -> ExitCode {
             probe_python,
         }) => return run(mode, interval, warn_below, probe_python),
         Err(msg) => {
-            eprintln!("vinowatch: {msg}\n\n{}", cli::USAGE);
+            eprintln!("vinowatch: {msg}\n\n{}", cli::usage());
             return ExitCode::from(2);
         }
     }

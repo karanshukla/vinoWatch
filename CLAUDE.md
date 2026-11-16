@@ -15,6 +15,7 @@ Guidance for Claude Code when working in this repository.
 - `src/icon.rs`, `src/raster.rs`, `src/png.rs`: the icons, drawn from one shape list as tray pixmaps, as the SVGs `--install-icons` writes, and as the PNG meters on each menu row (dbusmenu only takes PNG). Same palette and grid as vinoAuthFace's tray. `data/` holds the generated SVGs; after changing a shape run `VINOWATCH_BLESS_ICONS=1 cargo test`.
 - `src/driver.rs`: the stuck-`intel_vpu` probe (runs Python, as vinoPop's `npu_canary.py`) and the reload via `vino-npu-reset.service`. Root half: `install-npu-reset.sh`, `vino-npu-reset.service`, `vino-npu-reset.rules`.
 - `src/cli.rs`: flags. The usage text and every error message are pinned by its tests.
+- `src/version.rs`: `VERSION`, the one constant `--version`, the help, the tray menu and the update check use: `VINOWATCH_VERSION` at build time (release CI sets it from the tag, `package-release.sh` requires it) or `dev`. A stamp that isn't the Cargo.toml version fails to compile.
 - `src/update.rs`: the update check and install, through `systemd-run --user`; `found_in` is the pure half.
 - `docs/`: user docs the README links to. Measurements that used to sit in comments live there, with their dates. `docs/hand-written.md` is for contributors: what `serde_json`, `png` and `lexopt` cost when tried, and why the argument parser stayed. `png.rs` is a thin wrapper over the `png` crate.
 

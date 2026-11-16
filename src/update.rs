@@ -113,6 +113,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_dev_build_is_never_offered_an_update() {
+        assert_eq!(
+            found_in("dev", r#"{"tag_name":"v9.9.9"}"#),
+            Ok(Found::UpToDate)
+        );
+    }
+
+    #[test]
     fn a_later_release_is_offered_by_its_tag() {
         let answer = r#"{"url":"https://api.github.com/x","tag_name":"v9.9.9","name":"9.9.9"}"#;
         assert_eq!(found_in("0.6.0", answer), Ok(Found::Newer("v9.9.9".into())));

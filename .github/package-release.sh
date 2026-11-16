@@ -5,6 +5,10 @@
 # the same thing on every PR.
 set -eu
 
+# The binary reports this as its version; without it a build says `dev`.
+: "${VINOWATCH_VERSION:?set VINOWATCH_VERSION to the version being packed}"
+export VINOWATCH_VERSION
+
 # The dependencies are pure Rust, so rust-lld links the arm64 binary
 # without a cross toolchain.
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
