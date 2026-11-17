@@ -1,29 +1,28 @@
 //! What differs between tray hosts: who recolours a symbolic icon, and how
 //! tooltip and menu text must be escaped. docs/desktops.md has the table.
 
-/// The spec lets a tooltip's description carry markup, and XFCE, Cinnamon,
-/// MATE, Budgie and Plasma parse it as such: a `<` in a driver error or a
-/// process name would otherwise cut the tooltip short.
+/// XFCE, Cinnamon, MATE, Budgie and Plasma parse a tooltip as markup, so a `<`
+/// in a driver error or process name would cut it short.
 pub(super) fn markup_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
-/// Tray hosts that draw a themed `-symbolic` icon as the SVG has it instead of
-/// in the panel's text colour, by the watcher's process name (`comm`, cut to
-/// 15 characters). The glyph is near-black, and these panels are usually dark.
+/// Hosts that draw a `-symbolic` icon as the SVG has it (near-black) instead of
+/// in the panel's text colour, by the watcher's `comm` (cut to 15 characters).
 const NO_RECOLOUR_HOSTS: &[&str] = &[
     "lxqt-panel",
     "mate-panel",
-    // mate-panel's notification area when it runs out of process.
-    "notification-ar",
+    MATE_NOTIFICATION_AREA,
     "swaybar",
 ];
 
-/// Whether the tray host recolours `-symbolic` icons. `watcher` is the process
-/// name owning `org.kde.StatusNotifierWatcher`, `desktop` is
-/// `XDG_CURRENT_DESKTOP`; the desktop covers a watcher we couldn't name.
+/// mate-panel's notification area, when it runs out of process.
+const MATE_NOTIFICATION_AREA: &str = "notification-ar";
+
+/// Whether the host recolours `-symbolic` icons, by the watcher's process name,
+/// else by `XDG_CURRENT_DESKTOP` when we couldn't name it.
 pub(super) fn host_recolours(watcher: Option<&str>, desktop: Option<&str>) -> bool {
     if watcher.is_some_and(|name| NO_RECOLOUR_HOSTS.contains(&name.trim())) {
         return false;
@@ -32,15 +31,13 @@ pub(super) fn host_recolours(watcher: Option<&str>, desktop: Option<&str>) -> bo
     watcher.is_some() || !desktop.split(':').any(|d| d == "LXQt" || d == "MATE")
 }
 
-/// Who owns `org.kde.StatusNotifierWatcher`: its unique bus name, and its
-/// process name where that could be read.
+/// Who owns `org.kde.StatusNotifierWatcher`: its bus name, and its process name.
 pub(super) struct Watcher {
     pub(super) owner: String,
     pub(super) comm: Option<String>,
 }
 
-/// Remembers the tray host the icon names were last chosen for. A host can be
-/// replaced at any time, so the loop asks every poll.
+/// The tray host the icon names were last chosen for; the loop asks every poll.
 #[derive(Default)]
 pub(super) struct HostTracker {
     owner: Option<String>,
@@ -122,7 +119,12 @@ mod tests {
             Some(true)
         );
         assert_eq!(tracker.observe(watcher(":1.7", "waybar\n"), None), None);
-        // Another process took the name over.
+    }
+
+    #[test]
+    fn another_process_taking_the_name_over_is_a_change() {
+        let mut tracker = HostTracker::default();
+        tracker.observe(watcher(":1.7", "waybar\n"), None);
         assert_eq!(
             tracker.observe(watcher(":1.9", "swaybar\n"), None),
             Some(false)

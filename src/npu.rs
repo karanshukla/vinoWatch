@@ -4,10 +4,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-/// Cumulative NPU busy time in microseconds, if an `ivpu` device exposes it.
+/// Cumulative NPU busy time in microseconds, if an `ivpu` device exposes it;
+/// the first device by name, every poll
+/// (pinned by `tests::two_npus_are_read_in_name_order`).
 pub fn busy_us(sysfs_class_accel: &Path) -> Option<u64> {
     let mut entries: Vec<_> = fs::read_dir(sysfs_class_accel).ok()?.flatten().collect();
-    // `two_npus_are_read_in_name_order`: the same device every poll.
     entries.sort_by_key(|e| e.file_name());
     entries.iter().find_map(|entry| {
         fs::read_to_string(entry.path().join("device/npu_busy_time_us"))
@@ -27,8 +28,8 @@ impl Meter {
     }
 
     /// Feed the counter as read at `now`. The first reading, and any reading
-    /// after the counter went missing or reset, has nothing to compare with
-    /// and yields `None`.
+    /// after the counter went missing or reset (a driver reload restarts it
+    /// at zero), yields `None` (pinned by `tests::a_reset_counter_is_not_reported`).
     pub fn update(&mut self, reading: Option<u64>, now: Instant) -> Option<f64> {
         let reading = match reading {
             Some(r) => r,
@@ -38,7 +39,6 @@ impl Meter {
             }
         };
         let percent = self.last.and_then(|(prev, then)| {
-            // A driver reload restarts the counter from zero.
             let busy = reading.checked_sub(prev)?;
             let wall = now.duration_since(then).as_micros().max(1) as f64;
             Some((busy as f64 / wall * 100.0).min(100.0))
@@ -105,8 +105,8 @@ mod tests {
     fn two_npus_are_read_in_name_order() {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path();
-        // Created in reverse, so directory order alone would favour accel1.
-        for (device, busy) in [("accel1", "111\n"), ("accel0", "222\n")] {
+        let created_in_reverse = [("accel1", "111\n"), ("accel0", "222\n")];
+        for (device, busy) in created_in_reverse {
             fs::create_dir_all(root.join(device).join("device")).unwrap();
             fs::write(root.join(device).join("device/npu_busy_time_us"), busy).unwrap();
         }

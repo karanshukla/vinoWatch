@@ -8,8 +8,10 @@ use std::fs;
 use std::path::Path;
 
 /// The vino apps that run models through OpenVINO.
-// The prefix is the apps' own name, and Display prints it back.
-#[allow(clippy::enum_variant_names)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "the prefix is the apps' own name, and Display prints it back"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Project {
     VinoWhisper,
@@ -32,14 +34,10 @@ impl fmt::Display for Project {
 }
 
 /// Which project a process belongs to, from its command line and working
-/// directory.
-///
-/// The kernel truncates `comm` to 15 characters (`vinowhisper-serv`) and the
-/// Python apps all show up as `python3`, so the command line is what names them.
+/// directory, which alone names a `python3 main.py` vinoPop
+/// (pinned by `tests::vinopop_is_found_by_its_checkout_directory`).
 pub fn classify(cmdline: &[String], cwd: Option<&str>) -> Option<Project> {
     let mut haystack = cmdline.join(" ").to_lowercase();
-    // Older vinoPop launchers run `python3 main.py`: only the checkout
-    // directory names it (`vinopop_is_found_by_its_checkout_directory`).
     if let Some(cwd) = cwd {
         haystack.push(' ');
         haystack.push_str(&cwd.to_lowercase());
@@ -60,10 +58,9 @@ pub fn classify(cmdline: &[String], cwd: Option<&str>) -> Option<Project> {
 }
 
 /// Which project the program itself is, from file names only: argv[0], or for
-/// an interpreter the script it runs (argv[1]) or its `-m` module. So a vino
-/// app's helpers that never load OpenVINO (vinoWhisper's tray, settings window
-/// and idle dictation child) count toward it, while `pytest`, `uv run` or an
-/// editor with a vino path among its arguments or as its cwd don't.
+/// an interpreter its script or `-m` module, so a helper that never loads
+/// OpenVINO counts and `pytest` in a vino checkout doesn't
+/// (pinned by `tests::paths_and_arguments_are_not_the_program`).
 pub fn program_project(cmdline: &[String]) -> Option<Project> {
     let file_name = |arg: &String| arg.rsplit('/').next().unwrap_or_default().to_owned();
     let program = file_name(cmdline.first()?);
@@ -86,8 +83,7 @@ pub fn program_project(cmdline: &[String]) -> Option<Project> {
 /// `libopenvino` somewhere in its path doesn't.
 pub fn maps_openvino(maps: &str) -> bool {
     maps.lines().any(|line| {
-        // address perms offset dev inode path; the path may contain spaces.
-        let Some(path) = line.splitn(6, char::is_whitespace).nth(5) else {
+        let Some(path) = path_column(line) else {
             return false;
         };
         let path = path.trim().trim_end_matches(" (deleted)");
@@ -97,10 +93,16 @@ pub fn maps_openvino(maps: &str) -> bool {
     })
 }
 
+fn path_column(line: &str) -> Option<&str> {
+    const COLUMNS: usize = 6;
+    line.splitn(COLUMNS, char::is_whitespace).nth(COLUMNS - 1)
+}
+
 /// Whether `pid` has an OpenVINO library mapped. `None` when we may not read
-/// the maps file: other users' processes, and setuid or setgid ones like
-/// `vinoauthface-auth`, which the kernel makes non-dumpable. A process that
-/// has gone is `Some(false)`.
+/// the maps (other users' and non-dumpable setuid processes like
+/// `vinoauthface-auth`): "can't tell". A process that has gone is `Some(false)`
+/// (pinned by `tests::a_process_that_is_gone_is_not_an_openvino_user`,
+/// `tests::unreadable_maps_mean_cant_tell`).
 pub fn uses_openvino(proc_root: &Path, pid: u32) -> Option<bool> {
     match fs::read_to_string(proc_root.join(format!("{pid}/maps"))) {
         Ok(maps) => Some(maps_openvino(&maps)),
@@ -147,12 +149,15 @@ impl Memory {
         self.available as f64 / self.total.max(1) as f64
     }
 
-    /// Whether this runs out before `other` does.
+    /// Runs out before `other`: the smaller share left, not the fewer bytes
+    /// (pinned by `tests::the_tighter_memory_is_the_one_with_the_smaller_share_left`).
     pub fn tighter_than(self, other: Memory) -> bool {
         self.share_left() < other.share_left()
     }
 
-    /// Whether less than `percent` of the total is available; 0 never is.
+    /// Whether less than `percent` of the total is available; 0 never is
+    /// (pinned by `tests::memory_is_low_under_the_warning_share_and_fine_at_it`,
+    /// `tests::a_warning_share_of_zero_never_fires`).
     pub fn below_percent(self, percent: u8) -> bool {
         self.available.saturating_mul(100) < self.total.saturating_mul(percent.into())
     }
@@ -194,9 +199,9 @@ fn cgroup_v2_path(proc_root: &Path, pid: u32) -> Option<String> {
 
 /// One cgroup's limit and what is left under it, if it sets a limit.
 ///
-/// "Used" is `memory.current` minus inactive file cache, like `docker stats`:
-/// the cgroup is charged for page cache too, but that gives way under
-/// pressure, so counting it would raise the alarm too early.
+/// "Used" is `memory.current` minus inactive file cache, like `docker stats`,
+/// which gives way under pressure
+/// (pinned by `tests::a_parents_limit_counts_inactive_cache_as_free`).
 fn cgroup_memory(dir: &Path) -> Option<Memory> {
     let limit = read_u64(&dir.join("memory.max"))?;
     let current = read_u64(&dir.join("memory.current")).unwrap_or(0);
@@ -309,8 +314,7 @@ mod tests {
 
     #[test]
     fn a_projects_own_programs_are_named_by_file_name_only() {
-        let cmd = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-        for (args, project) in [
+        for (argv, project) in [
             (
                 &["/home/k/.local/bin/vinowhisper-tray", "--hidden"][..],
                 Some(Project::VinoWhisper),
@@ -335,23 +339,24 @@ mod tests {
                 &["python3", "/home/k/Development/vinoPop/vinopop"],
                 Some(Project::VinoPop),
             ),
-            // Paths and arguments are not the program.
-            (
-                &["/home/k/Development/vinoWhisper/.venv/bin/pytest", "-q"],
-                None,
-            ),
-            (&["uv", "run", "vinowhisper-caption"], None),
-            (&["kwrite", "/home/k/notes/vinowhisper.txt"], None),
-            (&["sudo", "vinoauthface", "enroll"], None),
-            (
-                &[
-                    "python3",
-                    "/home/k/Development/vinoWhisper/scripts/cleanup_eval.py",
-                ],
-                None,
-            ),
         ] {
-            assert_eq!(program_project(&cmd(args)), project, "{args:?}");
+            assert_eq!(program_project(&args(argv)), project, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn paths_and_arguments_are_not_the_program() {
+        for argv in [
+            &["/home/k/Development/vinoWhisper/.venv/bin/pytest", "-q"][..],
+            &["uv", "run", "vinowhisper-caption"],
+            &["kwrite", "/home/k/notes/vinowhisper.txt"],
+            &["sudo", "vinoauthface", "enroll"],
+            &[
+                "python3",
+                "/home/k/Development/vinoWhisper/scripts/cleanup_eval.py",
+            ],
+        ] {
+            assert_eq!(program_project(&args(argv)), None, "{argv:?}");
         }
     }
 
@@ -398,67 +403,126 @@ mod tests {
         assert!(holds_npu(root, 7));
         assert_eq!(uses_openvino(root, 8), Some(false));
         assert!(!holds_npu(root, 8));
-        // A pid with no /proc entry is "no"; one we may not read, "can't tell".
-        assert_eq!(uses_openvino(root, 9), Some(false));
-        fs::create_dir_all(root.join("10")).unwrap();
-        fs::write(root.join("10/maps"), "").unwrap();
-        fs::set_permissions(root.join("10/maps"), fs::Permissions::from_mode(0o000)).unwrap();
-        if fs::read(root.join("10/maps")).is_err() {
-            // Root reads it anyway.
-            assert_eq!(uses_openvino(root, 10), None);
-        }
-        assert!(!holds_npu(root, 9));
     }
 
     #[test]
-    fn finds_the_tightest_cgroup_limit() {
+    fn a_process_that_is_gone_is_not_an_openvino_user() {
         let scratch = tempfile::tempdir().unwrap();
-        let (proc_root, cg) = (scratch.path().join("proc"), scratch.path().join("cg"));
-        let mib = |n: u64| (n * 1024 * 1024).to_string();
-        let write = |dir: &str, max: &str, current: u64, inactive: u64| {
-            let d = cg.join(dir);
+        assert_eq!(uses_openvino(scratch.path(), 9), Some(false));
+        assert!(!holds_npu(scratch.path(), 9));
+    }
+
+    #[test]
+    fn unreadable_maps_mean_cant_tell() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        fs::create_dir_all(root.join("10")).unwrap();
+        fs::write(root.join("10/maps"), "").unwrap();
+        fs::set_permissions(root.join("10/maps"), fs::Permissions::from_mode(0o000)).unwrap();
+        let running_as_root = fs::read(root.join("10/maps")).is_ok();
+        if !running_as_root {
+            assert_eq!(uses_openvino(root, 10), None);
+        }
+    }
+
+    struct Cgroups {
+        _scratch: tempfile::TempDir,
+        proc_root: std::path::PathBuf,
+        cg: std::path::PathBuf,
+    }
+
+    fn mib(n: u64) -> u64 {
+        n * 1024 * 1024
+    }
+
+    impl Cgroups {
+        fn new() -> Self {
+            let scratch = tempfile::tempdir().unwrap();
+            let proc_root = scratch.path().join("proc");
+            let cg = scratch.path().join("cg");
+            Self {
+                _scratch: scratch,
+                proc_root,
+                cg,
+            }
+        }
+
+        fn write(&self, dir: &str, max: &str, current: u64, inactive: u64) {
+            let d = self.cg.join(dir);
             fs::create_dir_all(&d).unwrap();
             fs::write(d.join("memory.max"), format!("{max}\n")).unwrap();
-            fs::write(d.join("memory.current"), mib(current)).unwrap();
+            fs::write(d.join("memory.current"), mib(current).to_string()).unwrap();
             fs::write(
                 d.join("memory.stat"),
                 format!("anon 1\ninactive_file {}\n", mib(inactive)),
             )
             .unwrap();
-        };
-        // The app's own cgroup is unlimited; its parent has 1000 MiB with 900
-        // used, 300 of which is inactive cache; the root has none.
-        write("a/b", "max", 100, 0);
-        write("a", &mib(1000), 900, 300);
-        fs::create_dir_all(proc_root.join("7")).unwrap();
-        fs::write(proc_root.join("7/cgroup"), "0::/a/b\n").unwrap();
+        }
 
+        fn put_pid_in(&self, pid: u32, cgroup_line: &str) {
+            fs::create_dir_all(self.proc_root.join(pid.to_string())).unwrap();
+            fs::write(
+                self.proc_root.join(format!("{pid}/cgroup")),
+                format!("{cgroup_line}\n"),
+            )
+            .unwrap();
+        }
+
+        fn headroom(&self, pid: u32) -> Option<Memory> {
+            cgroup_headroom(&self.proc_root, &self.cg, pid)
+        }
+    }
+
+    #[test]
+    fn a_parents_limit_counts_inactive_cache_as_free() {
+        let tree = Cgroups::new();
+        tree.write("a/b", "max", 100, 0);
+        tree.write("a", &mib(1000).to_string(), 900, 300);
+        tree.put_pid_in(7, "0::/a/b");
         assert_eq!(
-            cgroup_headroom(&proc_root, &cg, 7),
+            tree.headroom(7),
             Some(Memory {
-                total: 1000 << 20,
-                available: 400 << 20
+                total: mib(1000),
+                available: mib(400)
             })
         );
+    }
 
-        // A tighter child wins on the share of its own limit left.
-        write("a/b", &mib(200), 190, 0);
+    #[test]
+    fn a_tighter_child_wins_on_the_share_of_its_own_limit_left() {
+        let tree = Cgroups::new();
+        tree.write("a", &mib(1000).to_string(), 900, 300);
+        tree.write("a/b", &mib(200).to_string(), 190, 0);
+        tree.put_pid_in(7, "0::/a/b");
         assert_eq!(
-            cgroup_headroom(&proc_root, &cg, 7),
+            tree.headroom(7),
             Some(Memory {
-                total: 200 << 20,
-                available: 10 << 20
+                total: mib(200),
+                available: mib(10)
             })
         );
+    }
 
-        // No limit anywhere, a v1 listing, and a missing pid are all "none".
-        fs::remove_dir_all(cg.join("a")).unwrap();
-        fs::create_dir_all(cg.join("a/b")).unwrap();
-        assert_eq!(cgroup_headroom(&proc_root, &cg, 7), None);
-        fs::create_dir_all(proc_root.join("8")).unwrap();
-        fs::write(proc_root.join("8/cgroup"), "4:memory:/a\n").unwrap();
-        assert_eq!(cgroup_headroom(&proc_root, &cg, 8), None);
-        assert_eq!(cgroup_headroom(&proc_root, &cg, 9), None);
+    #[test]
+    fn no_limit_anywhere_is_none() {
+        let tree = Cgroups::new();
+        tree.write("a/b", "max", 100, 0);
+        tree.write("a", "max", 100, 0);
+        tree.put_pid_in(7, "0::/a/b");
+        assert_eq!(tree.headroom(7), None);
+    }
+
+    #[test]
+    fn a_cgroup_v1_listing_is_none() {
+        let tree = Cgroups::new();
+        tree.write("a", &mib(1000).to_string(), 900, 0);
+        tree.put_pid_in(8, "4:memory:/a");
+        assert_eq!(tree.headroom(8), None);
+    }
+
+    #[test]
+    fn a_missing_pid_is_none() {
+        assert_eq!(Cgroups::new().headroom(9), None);
     }
 
     #[test]
@@ -510,18 +574,17 @@ mod tests {
 
     #[test]
     fn the_tighter_memory_is_the_one_with_the_smaller_share_left() {
-        let small = Memory {
+        let thirty_percent_of_1000 = Memory {
             total: 1_000,
             available: 300,
         };
-        let large = Memory {
+        let twenty_percent_of_16000 = Memory {
             total: 16_000,
             available: 3_200,
         };
-        // More bytes free, but 20% of its own total against 30%.
-        assert!(large.tighter_than(small));
-        assert!(!small.tighter_than(large));
-        assert!(!small.tighter_than(small));
+        assert!(twenty_percent_of_16000.tighter_than(thirty_percent_of_1000));
+        assert!(!thirty_percent_of_1000.tighter_than(twenty_percent_of_16000));
+        assert!(!thirty_percent_of_1000.tighter_than(thirty_percent_of_1000));
     }
 
     #[test]

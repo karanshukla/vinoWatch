@@ -21,24 +21,34 @@ pub fn encode(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    const IEND_WITH_ITS_FIXED_CRC: &[u8] = b"IEND\xAE\x42\x60\x82";
+
+    /// 80,100 bytes of scanlines: more than one 65,535-byte stored block.
+    const TWO_STORED_BLOCKS: (u32, u32) = (200, 100);
+
     #[test]
     fn an_image_is_signature_header_data_end() {
         let png = encode(2, 1, &[255, 0, 0, 255, 0, 0, 255, 128]);
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         assert_eq!(&png[12..16], b"IHDR");
         assert_eq!(&png[16..24], &[0, 0, 0, 2, 0, 0, 0, 1]);
-        // IEND's CRC is the same in every PNG.
-        assert_eq!(&png[png.len() - 8..], b"IEND\xAE\x42\x60\x82");
+        assert_eq!(&png[png.len() - 8..], IEND_WITH_ITS_FIXED_CRC);
     }
 
     #[test]
     fn rows_over_one_stored_block_split_into_several() {
-        let (w, h) = (200, 100); // 80,100 bytes of scanlines: two blocks
+        let (w, h) = TWO_STORED_BLOCKS;
         let png = encode(w, h, &vec![7; (w * h * 4) as usize]);
         let idat_len = u32::from_be_bytes(png[33..37].try_into().unwrap()) as usize;
         assert_eq!(&png[37..41], b"IDAT");
-        // zlib header, two 5-byte block headers, the data, adler32.
-        assert_eq!(idat_len, 2 + 5 * 2 + (w as usize * 4 + 1) * h as usize + 4);
+        const ZLIB_HEADER: usize = 2;
+        const STORED_BLOCK_HEADER: usize = 5;
+        const ADLER32: usize = 4;
+        let scanlines = (w as usize * 4 + 1) * h as usize;
+        assert_eq!(
+            idat_len,
+            ZLIB_HEADER + 2 * STORED_BLOCK_HEADER + scanlines + ADLER32
+        );
     }
 
     fn decoded(encoded: &[u8]) -> (png::OutputInfo, Vec<u8>) {
@@ -55,8 +65,7 @@ mod tests {
     /// uses, so the contract is what a decoder reads back, not the bytes.
     #[test]
     fn a_standard_decoder_reads_back_the_same_pixels() {
-        // Two stored blocks, every byte value, alpha included.
-        let (width, height) = (200, 100);
+        let (width, height) = TWO_STORED_BLOCKS;
         let pixels: Vec<u8> = (0..width * height * 4)
             .map(|i| (i * 7 % 256) as u8)
             .collect();
