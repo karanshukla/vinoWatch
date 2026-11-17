@@ -147,7 +147,7 @@ impl WatchTray {
 
     fn state(&self) -> State {
         if self.snap.low_memory || self.driver.stuck() {
-            State::LowMemory
+            State::Warning
         } else if self.in_use() {
             State::Active
         } else {
@@ -176,8 +176,7 @@ impl ksni::Tray for WatchTray {
         "vinoWatch".into()
     }
 
-    // As vinoWhisper and vinoAuthFace: Plasma files Hardware items in a
-    // different part of the panel.
+    // Plasma files Hardware items in a different part of the panel.
     fn category(&self) -> Category {
         Category::ApplicationStatus
     }
@@ -193,8 +192,9 @@ impl ksni::Tray for WatchTray {
         pixmaps(self.state())
     }
 
-    // Hosts hide a Passive item. `the_icon_hides_once_the_npu_has_idled_five_minutes`
-    // and `a_stuck_driver_turns_amber_and_stays_in_view` pin when it is one.
+    /// Hosts hide a Passive item
+    /// (pinned by `tests::the_icon_hides_at_five_quiet_minutes`,
+    /// `tests::a_stuck_driver_turns_amber_and_stays_in_view`).
     fn status(&self) -> ksni::Status {
         if self.driver.stuck() {
             ksni::Status::NeedsAttention
@@ -207,9 +207,7 @@ impl ksni::Tray for WatchTray {
         }
     }
 
-    // Called when spawn finds no StatusNotifierWatcher, or the host goes away.
-    // Keep running: sway and Hyprland start waybar alongside the session, not
-    // before it, and exiting here trips the unit's restart limit.
+    // Keep running: sway starts waybar after the unit, and exiting trips its restart limit.
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
         let why = match reason {
             ksni::OfflineReason::Error(e) => e.to_string(),
@@ -230,11 +228,11 @@ impl ksni::Tray for WatchTray {
         if !self.themed_icons {
             return String::new();
         }
-        State::LowMemory.icon_name().into()
+        State::Warning.icon_name().into()
     }
 
     fn attention_icon_pixmap(&self) -> Vec<ksni::Icon> {
-        pixmaps(State::LowMemory)
+        pixmaps(State::Warning)
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -271,8 +269,7 @@ pub fn run(
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        let mut sampler = Sampler::new(warn_below);
-        sampler.poll();
+        let mut sampler = Sampler::started(warn_below);
         let (jobs, mut queue) = unbounded_channel();
         let handle = WatchTray::new(probe_python, Some(jobs))
             .assume_sni_available(true)
@@ -332,85 +329,156 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_follows_the_snapshot() {
+    fn an_openvino_process_makes_the_icon_active() {
         let mut tray = WatchTray::new(None, None);
         assert_eq!(tray.state(), State::Idle);
         tray.snap.procs.push(proc_row(1));
         assert_eq!(tray.state(), State::Active);
-        // A vino app's helper with no OpenVINO mapped is listed, not active.
-        tray.snap.procs[0].openvino = false;
+    }
+
+    #[test]
+    fn a_vino_apps_helper_with_no_openvino_is_listed_not_active() {
+        let mut tray = WatchTray::new(None, None);
+        tray.snap.procs.push(Proc {
+            openvino: false,
+            ..proc_row(1)
+        });
         assert_eq!(tray.state(), State::Idle);
         assert!(
             tray.summary()
                 .ends_with("· 0 OpenVINO processes + 1 helper")
         );
-        tray.snap.procs[0].openvino = true;
+    }
+
+    #[test]
+    fn low_memory_turns_the_icon_amber() {
+        let mut tray = WatchTray::new(None, None);
         tray.snap.low_memory = true;
-        assert_eq!(tray.state(), State::LowMemory);
-        // NPU load from a process we couldn't list still counts.
-        tray.snap.low_memory = false;
-        tray.snap.procs.clear();
+        assert_eq!(tray.state(), State::Warning);
+        assert_eq!(pixmaps(State::Warning).len(), 6);
+    }
+
+    #[test]
+    fn npu_load_from_a_process_we_couldnt_list_still_counts() {
+        let mut tray = WatchTray::new(None, None);
         tray.snap.npu_percent = Some(0.4);
         assert_eq!(tray.state(), State::Idle);
         tray.snap.npu_percent = Some(30.0);
         assert_eq!(tray.state(), State::Active);
-        assert_eq!(pixmaps(State::LowMemory).len(), 6);
     }
 
-    #[test]
-    fn the_icon_hides_once_the_npu_has_idled_five_minutes() {
-        use ksni::Tray;
-        let mut tray = WatchTray::new(None, None);
-        let start = tray.npu_used;
-        let snap = |npu: f64| Snapshot {
-            npu_percent: Some(npu),
+    fn npu_at(percent: f64) -> Snapshot {
+        Snapshot {
+            npu_percent: Some(percent),
             ..Default::default()
-        };
-        // In view from startup until the first five quiet minutes pass.
-        tray.set_snapshot_at(snap(0.0), start + Duration::from_secs(60));
-        assert_eq!(tray.status(), ksni::Status::Active);
-        // Low memory on its own is not about the vino apps.
-        tray.snap.low_memory = true;
-        assert_eq!(tray.status(), ksni::Status::Active);
-        tray.set_snapshot_at(snap(0.4), start + HIDE_AFTER);
-        assert_eq!(tray.status(), ksni::Status::Passive);
-        // A resident app with the NPU idle doesn't bring it back.
-        let app = Proc {
+        }
+    }
+
+    fn resident_app() -> Proc {
+        Proc {
             name: "vino_speak".into(),
             cpu_percent: 3.0,
             ram_bytes: 1,
             npu_open: true,
             ..proc_row(1)
-        };
-        tray.snap.procs.push(app.clone());
-        assert_eq!(tray.status(), ksni::Status::Passive);
-        let used = start + HIDE_AFTER * 2;
-        tray.set_snapshot_at(snap(30.0), used);
+        }
+    }
+
+    #[test]
+    fn the_icon_is_in_view_just_before_five_quiet_minutes() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        let start = tray.npu_used;
+        tray.set_snapshot_at(npu_at(0.0), start + HIDE_AFTER - Duration::from_secs(1));
         assert_eq!(tray.status(), ksni::Status::Active);
-        tray.set_snapshot_at(snap(0.0), used + HIDE_AFTER - Duration::from_secs(1));
-        assert_eq!(tray.status(), ksni::Status::Active);
-        tray.snap.low_memory = true;
-        tray.snap.procs.push(app);
-        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
-        tray.set_snapshot_at(snap(0.0), used + HIDE_AFTER);
+    }
+
+    #[test]
+    fn the_icon_hides_at_five_quiet_minutes() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        let start = tray.npu_used;
+        tray.set_snapshot_at(npu_at(0.4), start + HIDE_AFTER);
         assert_eq!(tray.status(), ksni::Status::Passive);
     }
 
     #[test]
-    fn update_jobs_start_one_at_a_time_and_only_for_a_release() {
-        let (jobs, mut queue) = unbounded_channel();
-        let mut tray = WatchTray::new(None, Some(jobs));
-        // Nothing to install yet.
+    fn low_memory_alone_does_not_bring_a_hidden_icon_back() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        let start = tray.npu_used;
+        tray.snap.low_memory = true;
+        tray.set_snapshot_at(npu_at(0.0), start + HIDE_AFTER);
+        assert_eq!(tray.status(), ksni::Status::Passive);
+    }
+
+    #[test]
+    fn a_resident_app_with_the_npu_idle_does_not_bring_it_back() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        let start = tray.npu_used;
+        tray.set_snapshot_at(npu_at(0.0), start + HIDE_AFTER);
+        tray.snap.procs.push(resident_app());
+        assert_eq!(tray.status(), ksni::Status::Passive);
+    }
+
+    #[test]
+    fn npu_use_brings_the_icon_back_for_another_five_minutes() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        let used = tray.npu_used + HIDE_AFTER * 2;
+        tray.set_snapshot_at(npu_at(30.0), used);
+        assert_eq!(tray.status(), ksni::Status::Active);
+        tray.set_snapshot_at(npu_at(0.0), used + HIDE_AFTER - Duration::from_secs(1));
+        assert_eq!(tray.status(), ksni::Status::Active);
+        tray.set_snapshot_at(npu_at(0.0), used + HIDE_AFTER);
+        assert_eq!(tray.status(), ksni::Status::Passive);
+    }
+
+    #[test]
+    fn low_memory_with_an_app_running_needs_attention() {
+        use ksni::Tray;
+        let mut tray = WatchTray::new(None, None);
+        tray.set_snapshot_at(npu_at(30.0), tray.npu_used);
+        tray.snap.low_memory = true;
+        tray.snap.procs.push(resident_app());
+        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
+    }
+
+    fn tray_with_updates() -> (WatchTray, tokio::sync::mpsc::UnboundedReceiver<Job>) {
+        let (jobs, queue) = unbounded_channel();
+        (WatchTray::new(None, Some(jobs)), queue)
+    }
+
+    #[test]
+    fn there_is_no_install_before_a_release_is_found() {
+        let (mut tray, mut queue) = tray_with_updates();
         tray.start(INSTALL_UPDATE);
         assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_second_update_check_waits_for_the_first() {
+        let (mut tray, mut queue) = tray_with_updates();
         tray.start(CHECK_UPDATE);
         tray.start(CHECK_UPDATE);
         assert_eq!(queue.try_recv(), Ok(CHECK_UPDATE));
-        assert!(queue.try_recv().is_err(), "a second check while one runs");
+        assert!(queue.try_recv().is_err());
         assert_eq!(tray.update, Update::Checking);
-        // A driver check isn't held up by it.
+    }
+
+    #[test]
+    fn a_driver_check_is_not_held_up_by_an_update_check() {
+        let (mut tray, mut queue) = tray_with_updates();
+        tray.start(CHECK_UPDATE);
+        queue.try_recv().unwrap();
         tray.start(CHECK_DRIVER);
         assert_eq!(queue.try_recv(), Ok(CHECK_DRIVER));
+    }
+
+    #[test]
+    fn an_available_release_can_be_installed() {
+        let (mut tray, mut queue) = tray_with_updates();
         tray.update = Update::Available("v0.5.0".into());
         tray.start(INSTALL_UPDATE);
         assert_eq!(queue.try_recv(), Ok(INSTALL_UPDATE));
@@ -425,7 +493,7 @@ mod tests {
             verdict: Verdict::Stuck,
             after_reset: false,
         };
-        assert_eq!(tray.state(), State::LowMemory);
+        assert_eq!(tray.state(), State::Warning);
         assert_eq!(tray.status(), ksni::Status::NeedsAttention);
         assert!(tray.tool_tip().description.contains("NPU driver stuck"));
         tray.driver = Driver::Checked {
@@ -493,7 +561,13 @@ mod tests {
             }
             seen.push((name, tip));
         }
-        // The amber icon covers two warnings; the text names each.
+        let names = State::ALL.map(State::icon_name);
+        assert!(names[0] != names[1] && names[1] != names[2] && names[0] != names[2]);
+    }
+
+    #[test]
+    fn the_amber_icon_has_text_for_each_of_its_warnings() {
+        use ksni::Tray;
         let tips: HashMap<_, _> = situations()
             .into_iter()
             .map(|(n, t)| (n, t.tool_tip().description))
@@ -504,7 +578,5 @@ mod tests {
             tips["low memory"]
         );
         assert!(tips["stuck"].contains("stuck"), "{}", tips["stuck"]);
-        let names = State::ALL.map(State::icon_name);
-        assert!(names[0] != names[1] && names[1] != names[2] && names[0] != names[2]);
     }
 }

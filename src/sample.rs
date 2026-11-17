@@ -18,6 +18,9 @@ use crate::npu::{self, Meter};
 const MIB: u64 = 1024 * 1024;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
+/// `--warn-below 0` (pinned by `tests::a_zero_threshold_turns_the_warning_off`).
+pub const NEVER_WARN: u8 = 0;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc {
     pub pid: u32,
@@ -26,35 +29,30 @@ pub struct Proc {
     pub cpu_percent: f32,
     /// PSS when readable, else resident size (see `ram_is_pss`).
     pub ram_bytes: u64,
-    /// Shared pages are split between their users, so these add up. Resident
-    /// size, the fallback, counts them in every process.
+    /// PSS splits shared pages between their users, so figures add up.
     pub ram_is_pss: bool,
     /// Has an `/dev/accel` node open, so it is the one talking to the NPU.
     pub npu_open: bool,
-    /// Maps OpenVINO or has it in its name. False for a vino app's helper
-    /// listed by program name alone (its tray, say); true when its maps can't
-    /// be read, since then we can't tell.
+    /// False for a vino app's helper listed by program name alone (its tray);
+    /// true when its maps can't be read.
     pub openvino: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
-    /// System-wide; the driver has no per-process counter. `None` when there
-    /// is no `ivpu` device or this is the first poll.
+    /// System-wide. `None` with no `ivpu` device or on the first poll.
     pub npu_percent: Option<f64>,
     pub procs: Vec<Proc>,
-    /// The machine's RAM, or the tightest cgroup limit around a listed
-    /// process when that has less room left.
+    /// The machine's RAM, or a tighter cgroup limit around a listed process.
     pub memory: Option<Memory>,
-    /// `memory` is a cgroup limit (a container, or a unit with `MemoryMax`), not
-    /// the whole machine.
+    /// `memory` is a cgroup limit, not the whole machine.
     pub cgroup_limited: bool,
-    /// Available RAM is under the `--warn-below` share of the total.
+    /// Under the `--warn-below` share of the total is available (pinned by
+    /// `tests::warns_just_under_the_threshold`, `tests::does_not_warn_at_the_threshold`).
     pub low_memory: bool,
     /// An `ivpu` device exposes its busy counter, even on the first poll.
     pub npu_present: bool,
-    /// The venv interpreters of the Python OpenVINO apps listed this poll,
-    /// for the stuck-driver probe (see `driver::python_of`).
+    /// The interpreters of the Python apps listed, for the driver probe.
     pub pythons: Vec<PathBuf>,
 }
 
@@ -71,9 +69,8 @@ pub struct Sampler {
 }
 
 /// What each process's maps said, so idle processes aren't re-read every poll
-/// (docs/how-it-works.md, "The poll's own cost"). Keyed by start time, so a
-/// reused pid is a new process, and re-read when the virtual size changes,
-/// which loading a library does.
+/// (docs/how-it-works.md). Keyed by start time, re-read when the virtual size
+/// changes, which loading a library does.
 #[derive(Default)]
 struct MapsCache {
     seen: HashMap<u32, MapsReading>,
@@ -116,8 +113,7 @@ impl MapsCache {
     }
 }
 
-/// The parts of a `Sampler` that looking at one process needs, apart from
-/// sysinfo's list, which is borrowed while they are used.
+/// The parts of a `Sampler` that inspecting one process needs.
 struct Inspector<'a> {
     proc_root: &'a Path,
     uid: Option<u32>,
@@ -125,8 +121,7 @@ struct Inspector<'a> {
 }
 
 impl Inspector<'_> {
-    /// The row for one sysinfo entry, if it belongs in the list, and the
-    /// interpreter it offers the driver probe, if any.
+    /// The row for one sysinfo entry, if it belongs, and its probe interpreter.
     fn inspect(&mut self, pid: u32, process: &Process) -> Option<(Proc, Option<PathBuf>)> {
         let cmdline = command_line(process);
         if !is_userspace_process(process, &cmdline) {
@@ -157,21 +152,20 @@ impl Inspector<'_> {
             name,
             cpu_percent: process.cpu_usage(),
             npu_open: detect::holds_npu(self.proc_root, pid),
-            // Unreadable maps (`None`) count as OpenVINO: we can't tell.
             openvino: named_openvino || maps_openvino != Some(false),
         };
         Some((listed, python))
     }
 
-    /// A vino app's own program, listed even with no OpenVINO mapped. Only
-    /// for pids the proc root has, so a fake root lists nothing from the
-    /// real machine.
+    /// A vino app's own program, listed even with no OpenVINO mapped, for pids
+    /// the proc root has.
     fn is_vino_program(&self, pid: u32, cmdline: &[String]) -> bool {
         detect::program_project(cmdline).is_some() && self.proc_root.join(pid.to_string()).exists()
     }
 
-    /// Security: argv[0] is the process owner's choice, and the probe runs
-    /// it, so only our own processes may offer an interpreter.
+    /// argv[0] is the owner's choice and the probe runs it, so only our own
+    /// processes may offer one (pinned by `tests::only_our_own_processes_offer_an_interpreter`,
+    /// `tests::another_users_process_offers_no_interpreter`).
     fn runs_as_us(&self, pid: u32) -> bool {
         detect::uids(self.proc_root, pid)
             .is_some_and(|(real, effective)| Some(real) == self.uid && Some(effective) == self.uid)
@@ -186,13 +180,17 @@ fn command_line(process: &Process) -> Vec<String> {
         .collect()
 }
 
-/// Not one of the threads sysinfo lists as processes of their own, and not a
-/// kernel thread, which has no command line and no libraries.
+/// Not a thread (sysinfo lists each) and not a kernel thread.
 fn is_userspace_process(process: &Process, cmdline: &[String]) -> bool {
     process.thread_kind().is_none() && !cmdline.is_empty()
 }
 
-/// Vino apps first, in `Project`'s order, then the busiest.
+fn effective_uid() -> Option<u32> {
+    std::fs::metadata("/proc/self").ok().map(|m| m.uid())
+}
+
+/// Vino apps first, in `Project`'s order, then the busiest
+/// (pinned by `tests::vino_apps_are_listed_first_then_the_busiest`).
 fn listing_order(a: &Proc, b: &Proc) -> Ordering {
     a.project
         .is_none()
@@ -209,6 +207,13 @@ impl Sampler {
         sampler
     }
 
+    /// With the baseline poll taken: CPU % and NPU % are deltas.
+    pub fn started(warn_below_percent: u8) -> Self {
+        let mut sampler = Self::new(warn_below_percent);
+        sampler.poll();
+        sampler
+    }
+
     pub fn with_roots(proc_root: PathBuf, accel_root: PathBuf) -> Self {
         Self {
             sys: System::new(),
@@ -216,15 +221,12 @@ impl Sampler {
             proc_root,
             accel_root,
             cgroup_root: "/sys/fs/cgroup".into(),
-            warn_below_percent: 0,
-            // /proc/<pid> belongs to the process's effective uid.
-            uid: std::fs::metadata("/proc/self").ok().map(|m| m.uid()),
+            warn_below_percent: NEVER_WARN,
+            uid: effective_uid(),
             maps: MapsCache::default(),
         }
     }
 
-    /// CPU % is a delta, so the first poll reads 0 for everything. Call this
-    /// once, wait, then poll for real.
     pub fn poll(&mut self) -> Snapshot {
         self.refresh_processes();
         let (mut procs, mut pythons) = self.list_processes();
@@ -247,8 +249,6 @@ impl Sampler {
     }
 
     fn refresh_processes(&mut self) {
-        // Without tasks: sysinfo would read every thread, only for
-        // `is_userspace_process` to drop them.
         let kind = ProcessRefreshKind::nothing()
             .without_tasks()
             .with_cpu()
@@ -259,7 +259,6 @@ impl Sampler {
             .refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     }
 
-    /// The rows, unsorted, and the interpreters they offer the driver probe.
     fn list_processes(&mut self) -> (Vec<Proc>, Vec<PathBuf>) {
         let processes = self.sys.processes();
         let mut inspector = Inspector {
@@ -276,8 +275,7 @@ impl Sampler {
         (procs, pythons.into_iter().flatten().collect())
     }
 
-    /// What will run out first: the machine's RAM, or a cgroup limit above a
-    /// listed process with a smaller share left. The flag says it is a limit.
+    /// What runs out first, and whether that is a cgroup limit.
     fn binding_memory(&self, procs: &[Proc]) -> (Option<Memory>, bool) {
         let mut binding = detect::meminfo(&self.proc_root);
         let mut cgroup_limited = false;
@@ -295,7 +293,7 @@ impl Sampler {
 }
 
 impl Snapshot {
-    /// One line per poll, for scripts: `jq` reads it, nothing else does.
+    /// One line per poll, for scripts.
     pub fn to_json(&self) -> String {
         let mib = |bytes: u64| bytes / MIB;
         let wire = SnapshotJson {
@@ -331,14 +329,13 @@ impl Snapshot {
         String::from_utf8(json).expect("serde_json writes UTF-8")
     }
 
-    /// What the listed processes hold between them. Exact with PSS; with the
-    /// resident-size fallback it can count shared pages more than once.
+    /// What the listed processes hold; with the resident-size fallback, shared
+    /// pages can count twice.
     pub fn openvino_bytes(&self) -> u64 {
         self.procs.iter().map(|p| p.ram_bytes).sum()
     }
 
-    /// `OpenVINO apps hold 2.1 GiB of 7.6 GiB RAM, 4.9 GiB available`; inside a
-    /// limit, `... of 1.0 GiB cgroup limit, ...`.
+    /// `OpenVINO apps hold 2.1 GiB of 7.6 GiB RAM, 4.9 GiB available`.
     pub fn ram_label(&self) -> String {
         let gib = |bytes: u64| bytes as f64 / GIB;
         let used = gib(self.openvino_bytes());
@@ -407,10 +404,9 @@ struct ProcJson<'a> {
     openvino: bool,
 }
 
-/// How `--json` has always written two things serde_json would write its own
-/// way: percentages with one decimal, and every control character as
-/// `\u00XX`. `json_numbers_have_one_decimal_and_sizes_are_whole_mebibytes`
-/// and `json_names_keep_their_escapes` pin both.
+/// Percentages with one decimal and control characters as `\u00XX`, as `--json`
+/// always wrote them (pinned by `tests::json_numbers_have_one_decimal_and_sizes_are_whole_mebibytes`,
+/// `tests::json_names_keep_their_escapes`).
 struct WireFormat;
 
 impl Formatter for WireFormat {
@@ -446,8 +442,7 @@ impl Formatter for WireFormat {
 pub mod testing {
     use super::Proc;
 
-    /// An OpenVINO process that is idle and holds nothing. Tests override
-    /// the fields they are about.
+    /// An idle OpenVINO process holding nothing.
     pub fn proc_row(pid: u32) -> Proc {
         Proc {
             pid,
@@ -484,8 +479,7 @@ mod tests {
         Sampler::with_roots(proc_root.to_path_buf(), proc_root.join("no-accel"))
     }
 
-    /// A real process whose `argv[0]` is `program`, killed on drop. Real,
-    /// because sysinfo lists from the machine's `/proc`, not the fake root.
+    /// A real process (sysinfo reads the machine's `/proc`) with `argv[0]` set.
     struct Running(Child);
 
     impl Running {
@@ -495,14 +489,7 @@ mod tests {
                 .arg("30")
                 .spawn()
                 .unwrap();
-            // Until the exec, the child's command line is still ours.
-            let cmdline = format!("/proc/{}/cmdline", child.id());
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let expected = format!("{program}\0");
-            while !fs::read(&cmdline).is_ok_and(|c| c.starts_with(expected.as_bytes())) {
-                assert!(Instant::now() < deadline, "sleep never started");
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            wait_for_exec(&child, program);
             Running(child)
         }
 
@@ -515,6 +502,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.0.kill();
             let _ = self.0.wait();
+        }
+    }
+
+    fn wait_for_exec(child: &Child, program: &str) {
+        let cmdline = format!("/proc/{}/cmdline", child.id());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let expected = format!("{program}\0");
+        while !fs::read(&cmdline).is_ok_and(|c| c.starts_with(expected.as_bytes())) {
+            assert!(Instant::now() < deadline, "sleep never started");
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -541,8 +538,7 @@ mod tests {
         assert_eq!(pids, [4, 5, 6, 2, 3, 1]);
     }
 
-    /// vinoWhisper's tray never maps OpenVINO: it is listed for its program
-    /// name, as a helper.
+    /// vinoWhisper's tray never maps OpenVINO.
     #[test]
     fn a_vino_apps_own_program_is_listed_as_a_helper() {
         let helper = Running::as_program("/opt/bin/vinowhisper-tray");
@@ -559,8 +555,7 @@ mod tests {
         assert_eq!(listed.label().rsplit(", ").next(), Some("helper"));
     }
 
-    /// The other side of the rule above: the program name alone lists nothing
-    /// that the sampler's proc root doesn't have.
+    /// The other side of the rule above.
     #[test]
     fn a_vino_program_outside_the_proc_root_is_not_listed() {
         let _helper = Running::as_program("/opt/bin/vinowhisper-tray");
@@ -594,29 +589,49 @@ mod tests {
         assert!(snap.to_json().contains(r#""ram_kind":"rss""#));
     }
 
-    #[test]
-    fn maps_are_read_again_only_for_a_new_or_resized_process() {
-        let mut cache = MapsCache::default();
+    fn ask(
+        cache: &mut MapsCache,
+        start: u64,
+        vsize: u64,
+        maps: Option<bool>,
+    ) -> (Option<bool>, u32) {
         let mut reads = 0;
-        let mut check = |cache: &mut MapsCache, start, vsize, maps| {
-            cache.uses_openvino(7, start, vsize, || {
-                reads += 1;
-                maps
-            })
-        };
-        assert_eq!(check(&mut cache, 100, 4096, Some(false)), Some(false));
-        // Unchanged: the first answer stands, even if the maps now differ.
-        assert_eq!(check(&mut cache, 100, 4096, Some(true)), Some(false));
-        // It mapped something new.
-        assert_eq!(check(&mut cache, 100, 8192, Some(true)), Some(true));
-        // Same pid, another process.
-        assert_eq!(check(&mut cache, 200, 8192, None), None);
-        assert_eq!(reads, 3);
+        let answer = cache.uses_openvino(7, start, vsize, || {
+            reads += 1;
+            maps
+        });
+        (answer, reads)
+    }
+
+    #[test]
+    fn maps_are_not_read_again_for_an_unchanged_process() {
+        let mut cache = MapsCache::default();
+        assert_eq!(ask(&mut cache, 100, 4096, Some(false)), (Some(false), 1));
+        assert_eq!(ask(&mut cache, 100, 4096, Some(true)), (Some(false), 0));
+    }
+
+    #[test]
+    fn maps_are_read_again_when_the_virtual_size_changes() {
+        let mut cache = MapsCache::default();
+        ask(&mut cache, 100, 4096, Some(false));
+        assert_eq!(ask(&mut cache, 100, 8192, Some(true)), (Some(true), 1));
+    }
+
+    #[test]
+    fn maps_are_read_again_for_a_reused_pid() {
+        let mut cache = MapsCache::default();
+        ask(&mut cache, 100, 8192, Some(true));
+        assert_eq!(ask(&mut cache, 200, 8192, None), (None, 1));
+    }
+
+    #[test]
+    fn maps_of_gone_processes_are_forgotten() {
+        let mut cache = MapsCache::default();
+        ask(&mut cache, 100, 4096, Some(false));
         cache.retain(|_| false);
         assert!(cache.seen.is_empty());
     }
 
-    /// One string, as `--json` writes it.
     fn json_string(text: &str) -> String {
         let mut json = Vec::new();
         text.serialize(&mut serde_json::Serializer::with_formatter(
@@ -661,7 +676,6 @@ mod tests {
         );
     }
 
-    /// Whatever writes the JSON must keep these bytes: scripts read them.
     #[test]
     fn json_numbers_have_one_decimal_and_sizes_are_whole_mebibytes() {
         let snap = Snapshot {
@@ -703,29 +717,36 @@ mod tests {
         assert!(idle.to_json().starts_with(r#"{"npu_percent":0.0,"#));
     }
 
+    fn named_in_json(name: &str) -> String {
+        let snap = Snapshot {
+            procs: vec![Proc {
+                name: name.into(),
+                ..proc_row(1)
+            }],
+            ..Default::default()
+        };
+        let json = snap.to_json();
+        let start = json.find(r#""name":"#).unwrap() + 7;
+        let end = json.find(r#","project""#).unwrap();
+        json[start..end].to_string()
+    }
+
     #[test]
     fn json_names_keep_their_escapes() {
-        let named = |name: &str| {
-            let snap = Snapshot {
-                procs: vec![Proc {
-                    name: name.into(),
-                    ..proc_row(1)
-                }],
-                ..Default::default()
-            };
-            let json = snap.to_json();
-            let start = json.find(r#""name":"#).unwrap() + 7;
-            let end = json.find(r#","project""#).unwrap();
-            json[start..end].to_string()
-        };
-        assert_eq!(named("a\"b\\c\nd"), r#""a\"b\\c\u000ad""#);
-        assert_eq!(named("tab\there"), r#""tab\u0009here""#);
+        assert_eq!(named_in_json("a\"b\\c\nd"), r#""a\"b\\c\u000ad""#);
+        assert_eq!(named_in_json("tab\there"), r#""tab\u0009here""#);
         assert_eq!(
-            named("\u{1}\u{1f}\r\u{8}\u{c}"),
+            named_in_json("\u{1}\u{1f}\r\u{8}\u{c}"),
             r#""\u0001\u001f\u000d\u0008\u000c""#
         );
-        // Not escaped: a slash, DEL, and anything outside ASCII.
-        assert_eq!(named("a/b\u{7f}é\u{2028}🙂"), "\"a/b\u{7f}é\u{2028}🙂\"");
+    }
+
+    #[test]
+    fn json_names_leave_a_slash_del_and_non_ascii_unescaped() {
+        assert_eq!(
+            named_in_json("a/b\u{7f}é\u{2028}🙂"),
+            "\"a/b\u{7f}é\u{2028}🙂\""
+        );
     }
 
     #[test]
@@ -743,34 +764,40 @@ mod tests {
         assert_eq!(Snapshot::default().npu_label(), "NPU unavailable");
     }
 
-    /// The test binary itself maps no OpenVINO, so a fake /proc entry is the
-    /// only way to see a hit without OpenVINO installed: point the sampler at
-    /// a proc root that maps it for our own pid.
+    fn root_mapping_openvino_in_every_thread() -> tempfile::TempDir {
+        let scratch = tempfile::tempdir().unwrap();
+        for tid in fs::read_dir("/proc/self/task").unwrap().flatten() {
+            let tid = tid.file_name().to_string_lossy().parse().unwrap();
+            fake_openvino_process(scratch.path(), tid);
+        }
+        scratch
+    }
+
     #[test]
     fn finds_a_process_by_its_mapped_library() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path();
-        let pid = std::process::id();
-        // Every thread has its own /proc entry that reads the same, and
-        // sysinfo lists each as a process: they must not be listed again.
-        let tids = fs::read_dir("/proc/self/task").unwrap().flatten();
-        for tid in tids {
-            let tid = tid.file_name().to_string_lossy().parse().unwrap();
-            fake_openvino_process(root, tid);
-        }
-        let snap = sampler_at(root).poll();
+        let root = root_mapping_openvino_in_every_thread();
+        let snap = sampler_at(root.path()).poll();
         let me = snap
             .procs
             .iter()
-            .find(|p| p.pid == pid)
+            .find(|p| p.pid == std::process::id())
             .expect("own pid listed");
         assert!(!me.npu_open);
         assert!(me.openvino);
-        assert_eq!(snap.procs.len(), 1);
         assert_eq!(snap.npu_percent, None);
         assert!(!snap.npu_present);
-        // The test binary is no Python, so it offers no probe interpreter.
-        assert!(snap.pythons.is_empty());
+    }
+
+    #[test]
+    fn a_process_is_listed_once_not_once_per_thread() {
+        let root = root_mapping_openvino_in_every_thread();
+        assert_eq!(sampler_at(root.path()).poll().procs.len(), 1);
+    }
+
+    #[test]
+    fn a_process_that_is_no_python_offers_no_probe_interpreter() {
+        let root = root_mapping_openvino_in_every_thread();
+        assert!(sampler_at(root.path()).poll().pythons.is_empty());
     }
 
     #[test]
@@ -802,7 +829,6 @@ mod tests {
         assert_eq!(snap.ram_label(), "OpenVINO apps hold 1.5 GiB RAM");
     }
 
-    /// Writes a fake proc root with only a meminfo.
     fn low_memory_for(available_kib: u64, warn_below: u8) -> bool {
         let root = tempfile::tempdir().unwrap();
         fs::write(
@@ -816,16 +842,21 @@ mod tests {
     }
 
     #[test]
-    fn low_memory_threshold() {
+    fn warns_just_under_the_threshold() {
         assert!(low_memory_for(149, 15));
-        assert!(!low_memory_for(150, 15)); // exactly at the threshold is fine
-        assert!(!low_memory_for(0, 0)); // 0 turns the warning off
     }
 
-    /// A listed process in a 1000 MiB cgroup with 100 MiB left must flag low
-    /// memory even though the machine has plenty.
     #[test]
-    fn a_cgroup_limit_can_be_the_binding_one() {
+    fn does_not_warn_at_the_threshold() {
+        assert!(!low_memory_for(150, 15));
+    }
+
+    #[test]
+    fn a_zero_threshold_turns_the_warning_off() {
+        assert!(!low_memory_for(0, NEVER_WARN));
+    }
+
+    fn poll_in_a_1000_mib_cgroup(used_mib: u64) -> Snapshot {
         let scratch = tempfile::tempdir().unwrap();
         let pid = std::process::id();
         let (proc_root, cg) = (scratch.path().join("proc"), scratch.path().join("cg"));
@@ -839,12 +870,17 @@ mod tests {
         .unwrap();
         fs::create_dir_all(cg.join("box")).unwrap();
         fs::write(cg.join("box/memory.max"), mib(1000)).unwrap();
-        fs::write(cg.join("box/memory.current"), mib(900)).unwrap();
+        fs::write(cg.join("box/memory.current"), mib(used_mib)).unwrap();
 
         let mut sampler = sampler_at(&proc_root);
-        sampler.cgroup_root = cg.clone();
+        sampler.cgroup_root = cg;
         sampler.warn_below_percent = 15;
-        let snap = sampler.poll();
+        sampler.poll()
+    }
+
+    #[test]
+    fn a_cgroup_limit_can_be_the_binding_one() {
+        let snap = poll_in_a_1000_mib_cgroup(900);
         assert!(snap.cgroup_limited);
         assert!(snap.low_memory);
         assert_eq!(
@@ -854,11 +890,13 @@ mod tests {
                 available: 100 * MIB
             })
         );
+    }
 
-        // Plenty of room in the cgroup: the machine's figures stand.
-        fs::write(cg.join("box/memory.current"), mib(100)).unwrap();
-        let snap = sampler.poll();
+    #[test]
+    fn a_roomy_cgroup_leaves_the_machines_figures() {
+        let snap = poll_in_a_1000_mib_cgroup(100);
         assert!(!snap.cgroup_limited);
+        assert!(!snap.low_memory);
         assert_eq!(
             snap.memory,
             Some(Memory {
@@ -866,42 +904,52 @@ mod tests {
                 available: 6_000_000 << 10
             })
         );
-        assert!(!snap.low_memory);
     }
 
-    /// Another user can start anything with `argv[0]` set to a path named
-    /// `python3`; the probe would then run their program as us.
-    #[test]
-    fn only_our_own_processes_offer_an_interpreter() {
-        let fake_python = PathBuf::from("/tmp/vinowhisper/python3");
+    fn offered_by(status: Option<(u32, u32)>) -> Vec<PathBuf> {
         let app = Running::as_program("/tmp/vinowhisper/python3");
         let pid = app.pid();
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path();
         fake_openvino_process(root, pid);
-        let me = sampler_at(root).uid.unwrap();
-        let other = me.wrapping_add(1);
-        for (real, effective, offered) in [
-            (other, other, false),
-            (me, other, false),
-            (other, me, false),
-            (me, me, true),
-        ] {
+        if let Some((real, effective)) = status {
             fs::write(
                 root.join(format!("{pid}/status")),
                 format!("Name:\tsleep\nUid:\t{real}\t{effective}\t{effective}\t{effective}\n"),
             )
             .unwrap();
-            let snap = sampler_at(root).poll();
-            assert!(snap.procs.iter().any(|p| p.pid == pid), "listed either way");
-            assert_eq!(
-                snap.pythons.contains(&fake_python),
-                offered,
-                "uid {real}/{effective}"
+        }
+        let snap = sampler_at(root).poll();
+        assert!(snap.procs.iter().any(|p| p.pid == pid), "listed either way");
+        snap.pythons
+    }
+
+    fn our_uid() -> u32 {
+        effective_uid().unwrap()
+    }
+
+    #[test]
+    fn only_our_own_processes_offer_an_interpreter() {
+        let me = our_uid();
+        assert_eq!(
+            offered_by(Some((me, me))),
+            [PathBuf::from("/tmp/vinowhisper/python3")]
+        );
+    }
+
+    #[test]
+    fn another_users_process_offers_no_interpreter() {
+        let (me, other) = (our_uid(), our_uid().wrapping_add(1));
+        for (real, effective) in [(other, other), (me, other), (other, me)] {
+            assert!(
+                offered_by(Some((real, effective))).is_empty(),
+                "{real}/{effective}"
             );
         }
-        // No status to read: not offered.
-        fs::remove_file(root.join(format!("{pid}/status"))).unwrap();
-        assert!(sampler_at(root).poll().pythons.is_empty());
+    }
+
+    #[test]
+    fn a_process_with_no_status_offers_no_interpreter() {
+        assert!(offered_by(None).is_empty());
     }
 }

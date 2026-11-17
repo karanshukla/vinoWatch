@@ -19,7 +19,7 @@ mod tray;
 mod update;
 mod version;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
@@ -49,8 +49,7 @@ fn main() -> ExitCode {
             mode,
             interval,
             warn_below,
-            probe_python,
-        }) => return run(mode, interval, warn_below, probe_python),
+        }) => return run(mode, interval, warn_below),
         Err(msg) => {
             eprintln!("vinowatch: {msg}\n\n{}", cli::usage());
             return ExitCode::from(2);
@@ -59,31 +58,22 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(mode: Mode, interval: Duration, warn_below: u8, probe_python: Option<PathBuf>) -> ExitCode {
+fn run(mode: Mode, interval: Duration, warn_below: u8) -> ExitCode {
     match mode {
         #[cfg(feature = "tray")]
-        Mode::Tray => {
-            // Held until the tray exits. A second copy exits 0, or the unit
-            // would restart it in a loop (`a_second_tray_exits_cleanly`).
-            let _instance = match instance::lock_path().map(|p| instance::acquire(&p)) {
-                Some(Ok(None)) => {
+        Mode::Tray { probe_python } => {
+            let _claim = match instance::claim() {
+                instance::Claim::Taken => {
                     eprintln!("vinowatch: the tray is already running");
                     return ExitCode::SUCCESS;
                 }
-                Some(Ok(held)) => held,
-                Some(Err(e)) => {
-                    eprintln!("vinowatch: couldn't take the single-instance lock: {e}");
-                    None
-                }
-                None => None,
+                claim => claim,
             };
             tray_main(interval, warn_below, probe_python)
         }
         #[cfg(not(feature = "tray"))]
-        Mode::Tray => unreachable!("cli only picks the tray when it is compiled in"),
+        Mode::Tray { .. } => unreachable!("cli only picks the tray when it is compiled in"),
         Mode::Console { json, once } => {
-            // Only the tray offers the probe.
-            let _ = probe_python;
             console(json, once, interval, warn_below);
             ExitCode::SUCCESS
         }
@@ -91,7 +81,11 @@ fn run(mode: Mode, interval: Duration, warn_below: u8, probe_python: Option<Path
 }
 
 #[cfg(feature = "tray")]
-fn tray_main(interval: Duration, warn_below: u8, probe_python: Option<PathBuf>) -> ExitCode {
+fn tray_main(
+    interval: Duration,
+    warn_below: u8,
+    probe_python: Option<std::path::PathBuf>,
+) -> ExitCode {
     match tray::run(interval, warn_below, probe_python) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
@@ -103,9 +97,8 @@ fn tray_main(interval: Duration, warn_below: u8, probe_python: Option<PathBuf>) 
 
 /// `--check-npu`: 0 healthy, 1 stuck, 3 couldn't tell.
 fn check_npu(explicit: Option<&Path>) -> ExitCode {
-    // One poll, for the interpreters of any vino apps running right now.
-    let snap = Sampler::new(0).poll();
-    let python = driver::pick_python(explicit, &snap.pythons);
+    let running = Sampler::new(sample::NEVER_WARN).poll().pythons;
+    let python = driver::pick_python(explicit, &running);
     match driver::probe(&python) {
         driver::Verdict::Healthy => {
             println!("NPU driver OK");
@@ -134,9 +127,7 @@ fn console(json: bool, once: bool, interval: Duration, warn_below: u8) {
             interval.as_secs()
         );
     }
-    let mut sampler = Sampler::new(warn_below);
-    // CPU % and NPU % are deltas; this poll only sets the baseline.
-    sampler.poll();
+    let mut sampler = Sampler::started(warn_below);
     loop {
         sleep(interval);
         let snap = sampler.poll();

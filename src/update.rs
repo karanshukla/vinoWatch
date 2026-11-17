@@ -1,14 +1,10 @@
-//! "Check for updates" and "Update to vN" from the tray menu.
-//!
-//! The tray's unit allows Unix sockets only (`RestrictAddressFamilies=AF_UNIX`),
-//! so neither step runs inside it: both go to the user manager through
-//! `systemd-run --user`, which is a Unix socket away. The check is one
-//! `curl` to GitHub's releases API; the update is `vinowatch-upgrade`, the
-//! release installer install.sh leaves behind, in a unit of its own, so it
+//! "Check for updates" and "Update to vN" from the tray menu. The unit allows
+//! Unix sockets only, so both run outside it through `systemd-run --user`: one
+//! `curl` for the check, and `vinowatch-upgrade` in a unit of its own, which
 //! survives the restart of `vinowatch.service` it ends with.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use vino_ui::App;
 use vino_ui::update::{is_newer, latest_tag};
@@ -36,20 +32,24 @@ pub fn check(current: &str) -> Result<Found, String> {
         App::Watch.repo()
     );
     let curl = fetch_command(&url);
-    // Outside the unit's sandbox when there is a user manager to ask; run
-    // directly otherwise (a tray started by hand, or no systemd).
-    let mut outside = Command::new("systemd-run");
-    outside
-        .args(["--user", "--quiet", "--collect", "--pipe", "--wait", "--"])
-        .args(curl);
-    let output = match run(&mut outside) {
-        Some(output) => output,
-        None => run(Command::new(curl[0]).args(&curl[1..])).ok_or("curl isn't installed")?,
-    };
+    let output = outside_the_unit(&curl)
+        .or_else(|| directly(&curl))
+        .ok_or("curl isn't installed")?;
     if !output.status.success() {
         return Err("couldn't reach GitHub".into());
     }
     found_in(current, &String::from_utf8_lossy(&output.stdout))
+}
+
+/// Through the user manager, outside the unit's sandbox; `None` with no systemd.
+fn outside_the_unit(curl: &[&str]) -> Option<Output> {
+    run(Command::new("systemd-run")
+        .args(["--user", "--quiet", "--collect", "--pipe", "--wait", "--"])
+        .args(curl))
+}
+
+fn directly(curl: &[&str]) -> Option<Output> {
+    run(Command::new(curl[0]).args(&curl[1..]))
 }
 
 /// `curl` for one small JSON answer: it gives up after 10 s or 1 MiB.
@@ -77,9 +77,8 @@ fn found_in(current: &str, release_json: &str) -> Result<Found, String> {
     })
 }
 
-/// Installs `tag` with `upgrade` in a unit of its own. Blocking until it
-/// finishes; on success the installer restarts this tray, so this only
-/// returns to say it failed.
+/// Installs `tag` with `upgrade` in a unit of its own. On success the installer
+/// restarts this tray, so this only returns to say it failed.
 pub fn install(upgrade: &std::path::Path, tag: &str) -> Result<(), String> {
     let status = Command::new("systemd-run")
         .args(["--user", "--quiet", "--collect", "--wait", "--unit", UNIT])
@@ -100,7 +99,7 @@ pub fn install(upgrade: &std::path::Path, tag: &str) -> Result<(), String> {
     }
 }
 
-fn run(command: &mut Command) -> Option<std::process::Output> {
+fn run(command: &mut Command) -> Option<Output> {
     command
         .stdin(Stdio::null())
         .stderr(Stdio::null())

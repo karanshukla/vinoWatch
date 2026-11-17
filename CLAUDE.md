@@ -38,7 +38,7 @@ CI runs those, plus `shellcheck` on every script, `systemd-analyze verify` on bo
 
 ## Comments and tests
 
-A rule stated in a comment gets a test named after the rule instead, ideally one either side of its boundary, and the code keeps at most a one-line pointer to the test by name. What a test can't reach (a tray host's behaviour, a systemd or polkit constraint, a security invariant) stays as one line. Tests take scratch directories from `tempfile`, and fake `/proc`, sysfs and cgroup roots under them.
+Comments follow [docs/comment-style.md](docs/comment-style.md): extract, name, then pin a rule with a test pair named after it, cited from the code as ``(pinned by `tests::name`)``. `tests/doc_links.rs` (CI job Doc Links) fails on a citation with no such `#[test]`. What a test can't reach (a tray host's behaviour, a systemd or polkit constraint, a security invariant) stays as one line. Tests take scratch directories from `tempfile`, and fake `/proc`, sysfs and cgroup roots under them.
 
 ## Gotchas
 

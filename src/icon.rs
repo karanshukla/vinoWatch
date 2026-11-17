@@ -59,8 +59,8 @@ pub enum State {
     Idle,
     /// At least one OpenVINO process is running.
     Active,
-    /// Available memory is under the `--warn-below` share.
-    LowMemory,
+    /// Available memory is under the `--warn-below` share, or the driver is stuck.
+    Warning,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,9 +71,9 @@ enum Part {
     Level,
 }
 
-// vinoWhisper's palette (gui/src/paint.rs), as in vinoAuthFace. The contrast
-// each colour has to keep is pinned by the `*_on_any_panel` and
-// `the_symbolic_icons_show_on_light_and_dark_panels` tests.
+/// vinoWhisper's palette (gui/src/paint.rs), as in vinoAuthFace; its contrast
+/// is pinned by `tests::the_pixmap_meters_stand_out_on_any_panel`,
+/// `tests::the_symbolic_icons_show_on_light_and_dark_panels`.
 const TILE: Rgba = Rgba(14, 14, 16, 255);
 const EDGE: Rgba = Rgba(255, 255, 255, 46);
 const WHITE: Rgba = Rgba(250, 250, 250, 255);
@@ -81,16 +81,15 @@ const TRACK: Rgba = Rgba(160, 164, 172, 140);
 const GREEN: Rgba = Rgba(86, 204, 120, 255);
 const AMBER: Rgba = Rgba(245, 184, 66, 255);
 
-// Darker than GREEN and AMBER: the symbolic icon has no tile under it.
-const TRAY_GREEN: Rgba = Rgba(40, 150, 80, 255);
-const TRAY_AMBER: Rgba = Rgba(184, 115, 0, 255);
+const PANEL_GREEN: Rgba = Rgba(40, 150, 80, 255);
+const PANEL_AMBER: Rgba = Rgba(184, 115, 0, 255);
 
 fn paint(state: State, part: Part) -> Rgba {
     match (state, part) {
         (_, Part::Track) => TRACK,
         (State::Idle, Part::Level) => WHITE,
         (State::Active, Part::Level) => GREEN,
-        (State::LowMemory, Part::Level) => AMBER,
+        (State::Warning, Part::Level) => AMBER,
     }
 }
 
@@ -161,6 +160,11 @@ fn opacity(Rgba(_, _, _, a): Rgba) -> String {
     format!("{:.2}", f32::from(a) / 255.0)
 }
 
+/// SVG strokes straddle the path: inset by half the width to match `stroke_rounded`.
+fn stroke_centreline(shape: Shape, width: f32) -> Shape {
+    shape.inset(width / 2.0)
+}
+
 /// A `fill` attribute, with `fill-opacity` only where the colour needs it.
 fn svg_fill(color: Rgba) -> String {
     if color.3 == u8::MAX {
@@ -183,8 +187,7 @@ pub fn app_svg() -> String {
         svg.push('\n');
     };
     line(LARGE.tile.svg_rect(&format!(r#"fill="{}""#, hex(TILE))));
-    // SVG strokes straddle the path; inset by half to match stroke_rounded.
-    line(LARGE.tile.inset(LARGE.edge / 2.0).svg_rect(&format!(
+    line(stroke_centreline(LARGE.tile, LARGE.edge).svg_rect(&format!(
         r#"fill="none" stroke="{}" stroke-opacity="{}" stroke-width="{}""#,
         hex(EDGE),
         opacity(EDGE),
@@ -198,7 +201,7 @@ pub fn app_svg() -> String {
 }
 
 impl State {
-    pub const ALL: [State; 3] = [State::Idle, State::Active, State::LowMemory];
+    pub const ALL: [State; 3] = [State::Idle, State::Active, State::Warning];
 
     /// The themed icon name the tray asks for, as vinoWhisper's tray does:
     /// Plasma recolours a `-symbolic` icon to the panel's text colour, and the
@@ -207,7 +210,7 @@ impl State {
         match self {
             State::Idle => "vinowatch-symbolic",
             State::Active => "vinowatch-active-symbolic",
-            State::LowMemory => "vinowatch-low-memory-symbolic",
+            State::Warning => "vinowatch-low-memory-symbolic",
         }
     }
 }
@@ -223,14 +226,14 @@ pub fn symbolic_svg(state: State) -> String {
         let bucket = match (state, part) {
             (_, Part::Track) => &mut dim,
             (State::Idle, Part::Level) => &mut text,
-            (State::Active | State::LowMemory, Part::Level) => &mut accent,
+            (State::Active | State::Warning, Part::Level) => &mut accent,
         };
         bucket.push_str(&shape.svg_path());
     }
-    let accent_fill = hex(if state == State::LowMemory {
-        TRAY_AMBER
+    let accent_fill = hex(if state == State::Warning {
+        PANEL_AMBER
     } else {
-        TRAY_GREEN
+        PANEL_GREEN
     });
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\n  \
@@ -433,10 +436,20 @@ mod tests {
                 .collect()
         };
         assert_eq!(levels(&[0.0, 1.0, 0.5]), [None, Some(36.0), Some(18.0)]);
-        // Over-full is full; a sliver is a round dot, not nothing.
-        assert_eq!(levels(&[2.0, 0.001, 0.0]), [Some(36.0), Some(6.0), None]);
         assert_eq!(levels(&[0.25]), [Some(10.0)]);
-        // A level that barely moves draws the same icon.
+    }
+
+    #[test]
+    fn an_overfull_meter_is_full_and_a_sliver_is_a_round_dot_not_nothing() {
+        let levels: Vec<_> = meters(&[2.0, 0.001, 0.0])
+            .into_iter()
+            .map(|(_, l)| l.map(|l| l.w))
+            .collect();
+        assert_eq!(levels, [Some(36.0), Some(6.0), None]);
+    }
+
+    #[test]
+    fn a_level_that_barely_moves_draws_the_same_icon() {
         assert_eq!(
             meter_png(State::Active, &[0.5]),
             meter_png(State::Active, &[0.51])
@@ -533,8 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn symbolic_tracks_and_levels_do_not_overlap() {
-        // Overlapping half-opacity paths would darken where they meet.
+    fn half_opacity_symbolic_paths_do_not_overlap() {
         for (i, (a, _)) in SYMBOLIC.marks.iter().enumerate() {
             for (b, _) in &SYMBOLIC.marks[i + 1..] {
                 let apart =
@@ -594,6 +606,21 @@ mod tests {
             .unwrap()
     }
 
+    /// The track's end clear of the level and its anti-aliased edge.
+    fn empty_end(track: Shape, level: Option<Shape>) -> Shape {
+        let from = level.map_or(track.x, |l| l.x + l.w + 1.0);
+        Shape {
+            x: from,
+            w: track.x + track.w - from,
+            ..track
+        }
+    }
+
+    /// A full meter has no empty end to check.
+    fn is_full(track: Shape, level: Option<Shape>) -> bool {
+        level.is_some_and(|l| l.w >= track.w - 1.0)
+    }
+
     /// One meter, drawn: its level (if any) against the track, and the
     /// track's empty end against the tile, both 3:1 (WCAG 1.4.11). The tile is
     /// opaque and surrounds every meter, so the panel never touches them and
@@ -605,14 +632,7 @@ mod tests {
         level: Option<Shape>,
         unit: f32,
     ) {
-        // The empty end, clear of the level and its anti-aliased edge.
-        let from = level.map_or(track.x, |l| l.x + l.w + 1.0);
-        let end = Shape {
-            x: from,
-            w: track.x + track.w - from,
-            ..track
-        };
-        let empty = best(pixel, end.rect(unit), TILE);
+        let empty = best(pixel, empty_end(track, level).rect(unit), TILE);
         let on_tile = contrast(empty, TILE);
         assert!(
             on_tile >= 3.0,
@@ -673,8 +693,7 @@ mod tests {
                     Rgba(r, g, b, a)
                 };
                 for (track, level) in meters(levels) {
-                    // A full meter has no empty end to check.
-                    if level.is_some_and(|l| l.w >= track.w - 1.0) {
+                    if is_full(track, level) {
                         continue;
                     }
                     let what = format!("{state:?} {levels:?}");

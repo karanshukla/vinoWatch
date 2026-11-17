@@ -27,8 +27,14 @@ const USAGE_BODY: &str = "Shows what the OpenVINO apps on this machine (vinoWhis
 
 #[derive(Debug, PartialEq)]
 pub enum Mode {
-    Tray,
-    Console { json: bool, once: bool },
+    Tray {
+        /// For the tray's "Check NPU driver".
+        probe_python: Option<PathBuf>,
+    },
+    Console {
+        json: bool,
+        once: bool,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -43,8 +49,6 @@ pub enum Command {
         mode: Mode,
         interval: Duration,
         warn_below: u8,
-        /// For the tray's "Check NPU driver".
-        probe_python: Option<PathBuf>,
     },
 }
 
@@ -107,13 +111,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let mode = if console || json || once || !cfg!(feature = "tray") {
         Mode::Console { json, once }
     } else {
-        Mode::Tray
+        Mode::Tray { probe_python }
     };
     Ok(Command::Run {
         mode,
         interval: interval.unwrap_or(DEFAULT_INTERVAL),
         warn_below,
-        probe_python,
     })
 }
 
@@ -123,6 +126,17 @@ mod tests {
 
     fn p(args: &[&str]) -> Result<Command, String> {
         parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[cfg(feature = "tray")]
+    fn tray_probe_python(args: &[&str]) -> Option<PathBuf> {
+        match p(args) {
+            Ok(Command::Run {
+                mode: Mode::Tray { probe_python },
+                ..
+            }) => probe_python,
+            other => panic!("not a tray run: {other:?}"),
+        }
     }
 
     #[test]
@@ -144,7 +158,6 @@ mod tests {
                 },
                 interval: Duration::from_secs(5),
                 warn_below: 15,
-                probe_python: None,
             })
         );
         assert_eq!(
@@ -156,7 +169,6 @@ mod tests {
                 },
                 interval: Duration::from_secs(2),
                 warn_below: 15,
-                probe_python: None,
             })
         );
     }
@@ -167,7 +179,7 @@ mod tests {
         assert!(matches!(
             p(&["3"]),
             Ok(Command::Run {
-                mode: Mode::Tray,
+                mode: Mode::Tray { .. },
                 ..
             })
         ));
@@ -207,9 +219,12 @@ mod tests {
     }
 
     #[test]
-    fn help_and_version_win() {
-        // The first bad argument stops parsing before --help is seen.
+    fn the_first_bad_argument_stops_parsing_before_help_is_seen() {
         assert!(p(&["--nope", "--help"]).is_err());
+    }
+
+    #[test]
+    fn help_and_version_win() {
         assert_eq!(p(&["--help", "--nope"]), Ok(Command::Help));
         assert_eq!(p(&["--version"]), Ok(Command::Version));
         assert_eq!(p(&["-V"]), Ok(Command::Version));
@@ -225,10 +240,15 @@ mod tests {
             })
         );
         assert!(p(&["--probe-python"]).is_err());
-        let Ok(Command::Run { probe_python, .. }) = p(&["--probe-python", "/v/bin/python3"]) else {
-            panic!()
-        };
-        assert_eq!(probe_python, Some("/v/bin/python3".into()));
+    }
+
+    #[cfg(feature = "tray")]
+    #[test]
+    fn the_tray_takes_the_probe_python() {
+        assert_eq!(
+            tray_probe_python(&["--probe-python", "/v/bin/python3"]),
+            Some("/v/bin/python3".into())
+        );
     }
 
     #[test]
@@ -309,12 +329,13 @@ SECONDS is the poll interval, 1 to 3600 (default 2).",
         }
     }
 
+    #[cfg(feature = "tray")]
     #[test]
     fn a_flag_takes_the_next_argument_as_its_value_whatever_it_looks_like() {
-        let Ok(Command::Run { probe_python, .. }) = p(&["--probe-python", "--json"]) else {
-            panic!()
-        };
-        assert_eq!(probe_python, Some("--json".into()));
+        assert_eq!(
+            tray_probe_python(&["--probe-python", "--json"]),
+            Some("--json".into())
+        );
     }
 
     #[test]

@@ -8,6 +8,28 @@ use std::path::{Path, PathBuf};
 /// Held for the life of the process; the kernel drops the lock when it dies.
 pub struct Instance(#[allow(dead_code)] File);
 
+pub enum Claim {
+    Held(#[allow(dead_code)] Instance),
+    /// Exit 0, or the unit restarts it (pinned by `tests/cli.rs::a_second_tray_exits_cleanly`).
+    Taken,
+    /// No runtime dir, or the lock failed.
+    Unguarded,
+}
+
+pub fn claim() -> Claim {
+    let Some(path) = lock_path() else {
+        return Claim::Unguarded;
+    };
+    match acquire(&path) {
+        Ok(Some(held)) => Claim::Held(held),
+        Ok(None) => Claim::Taken,
+        Err(e) => {
+            eprintln!("vinowatch: couldn't take the single-instance lock: {e}");
+            Claim::Unguarded
+        }
+    }
+}
+
 /// `$XDG_RUNTIME_DIR/vinowatch.lock`, or `None` outside a session with a
 /// runtime dir (then there is no guard).
 pub fn lock_path() -> Option<PathBuf> {

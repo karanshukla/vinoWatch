@@ -18,6 +18,9 @@ use crate::update;
 /// 16 GiB machine. Its RAM meter is full here.
 const HEAVY_RAM_SHARE: f64 = 0.2;
 
+/// A process using this much CPU is working: one percent of a core.
+const CPU_BUSY_PERCENT: f32 = 1.0;
+
 /// What the menu offers that depends on the machine, not on a poll.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Installed {
@@ -164,7 +167,7 @@ impl WatchTray {
     fn ram_icon(&self) -> RowIcon {
         let used = self.snap.memory.map_or(0.0, |m| 1.0 - m.share_left());
         let state = if self.snap.low_memory {
-            State::LowMemory
+            State::Warning
         } else if self.in_use() {
             State::Active
         } else {
@@ -186,8 +189,8 @@ impl WatchTray {
         if self.ram_share(p) >= HEAVY_RAM_SHARE
             || (self.snap.low_memory && biggest == Some(p.ram_bytes))
         {
-            State::LowMemory
-        } else if p.cpu_percent >= 1.0
+            State::Warning
+        } else if p.cpu_percent >= CPU_BUSY_PERCENT
             || (p.npu_open && self.snap.npu_percent.is_some_and(|n| n >= NPU_BUSY_PERCENT))
         {
             State::Active
@@ -294,33 +297,58 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_process_row_is_coloured_by_what_it_is_doing() {
-        const GIB: u64 = 1024 * 1024 * 1024;
-        let proc = |pid, cpu_percent, ram_bytes, npu_open| Proc {
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    fn proc_state_in(procs: [Proc; 3], npu_percent: f64, low_memory: bool) -> Vec<State> {
+        let mut tray = WatchTray::new(None, None);
+        tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
+        tray.snap.npu_percent = Some(npu_percent);
+        tray.snap.low_memory = low_memory;
+        tray.snap.procs = procs.to_vec();
+        procs.iter().map(|p| tray.proc_state(p)).collect()
+    }
+
+    fn row(pid: u32, cpu_percent: f32, ram_bytes: u64, npu_open: bool) -> Proc {
+        Proc {
             cpu_percent,
             ram_bytes,
             npu_open,
             ..proc_row(pid)
-        };
-        let mut tray = WatchTray::new(None, None);
-        tray.snap.memory = Some(memory(16 * GIB, 8 * GIB));
-        tray.snap.npu_percent = Some(0.0);
-        let waiting = proc(1, 0.2, GIB, true);
-        let working = proc(2, 40.0, GIB / 2, false);
-        let heavy = proc(3, 0.0, 4 * GIB, false);
-        tray.snap.procs = vec![waiting.clone(), working.clone(), heavy.clone()];
-        assert_eq!(tray.proc_state(&waiting), State::Idle);
-        assert_eq!(tray.proc_state(&working), State::Active);
-        assert_eq!(tray.proc_state(&heavy), State::LowMemory);
-        // Holding the NPU counts as work once the NPU is busy.
-        tray.snap.npu_percent = Some(30.0);
-        assert_eq!(tray.proc_state(&waiting), State::Active);
-        // Low RAM points at the biggest process even under the threshold.
-        tray.snap.procs = vec![waiting.clone(), working.clone()];
-        tray.snap.low_memory = true;
-        assert_eq!(tray.proc_state(&waiting), State::LowMemory);
-        assert_eq!(tray.proc_state(&working), State::Active);
+        }
+    }
+
+    fn waiting_working_heavy() -> [Proc; 3] {
+        [
+            row(1, 0.2, GIB, true),
+            row(2, 40.0, GIB / 2, false),
+            row(3, 0.0, 4 * GIB, false),
+        ]
+    }
+
+    #[test]
+    fn a_row_is_amber_when_heavy_green_when_working_white_when_waiting() {
+        assert_eq!(
+            proc_state_in(waiting_working_heavy(), 0.0, false),
+            [State::Idle, State::Active, State::Warning]
+        );
+    }
+
+    #[test]
+    fn holding_the_npu_counts_as_work_once_the_npu_is_busy() {
+        assert_eq!(
+            proc_state_in(waiting_working_heavy(), 30.0, false)[0],
+            State::Active
+        );
+    }
+
+    #[test]
+    fn low_ram_points_at_the_biggest_process_even_under_the_threshold() {
+        let [waiting, working, _] = waiting_working_heavy();
+        let third = row(3, 0.0, 0, false);
+        assert_eq!(
+            proc_state_in([waiting, working, third], 30.0, true),
+            [State::Warning, State::Active, State::Idle]
+        );
     }
 
     #[test]
@@ -378,11 +406,6 @@ mod tests {
         );
         tray.update = Update::Available("v0.5.0".into());
         assert_eq!(update_label(&tray, true), ("Update to v0.5.0".into(), true));
-        // A build installed by hand still hears about it, and opens the page.
-        assert_eq!(
-            update_label(&tray, false),
-            ("Update to v0.5.0".into(), true)
-        );
         tray.update = Update::Installing("v0.5.0".into());
         assert_eq!(
             update_label(&tray, true),
@@ -399,12 +422,26 @@ mod tests {
     }
 
     #[test]
+    fn a_build_installed_by_hand_still_hears_of_an_update() {
+        let mut tray = WatchTray::new(None, None);
+        tray.update = Update::Available("v0.5.0".into());
+        assert_eq!(
+            update_label(&tray, false),
+            ("Update to v0.5.0".into(), true)
+        );
+    }
+
+    #[test]
     fn the_driver_check_shows_with_an_npu() {
         let mut tray = WatchTray::new(None, None);
         assert!(!labels(&tray).contains(&"Check NPU driver".to_string()));
         tray.snap.npu_present = true;
         assert!(labels(&tray).contains(&"Check NPU driver".to_string()));
-        // A reload that leaves no device must still offer a retry.
+    }
+
+    #[test]
+    fn a_reload_that_leaves_no_device_still_offers_a_retry() {
+        let mut tray = WatchTray::new(None, None);
         tray.snap.npu_present = false;
         tray.driver = Driver::ResetFailed("modprobe failed".into());
         assert!(labels(&tray).contains(&"Check NPU driver".to_string()));

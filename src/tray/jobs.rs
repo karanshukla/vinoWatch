@@ -59,8 +59,7 @@ async fn run_update_job(job: UpdateJob, handle: &ksni::Handle<WatchTray>) -> Upd
                 return Update::Failed("no vinowatch-upgrade".into());
             };
             let failed_tag = tag.clone();
-            // Success restarts the tray, which ends this process on the new
-            // binary; returning at all means it didn't happen.
+            // Success restarts the tray and ends this process; returning means it didn't.
             match tokio::task::spawn_blocking(move || update::install(&upgrade, &tag)).await {
                 Ok(Err(why)) => Update::Failed(why),
                 Ok(Ok(())) => Update::Available(failed_tag),

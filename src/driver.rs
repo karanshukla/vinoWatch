@@ -1,13 +1,8 @@
-//! The stuck `intel_vpu` state, and the driver reload that clears it.
-//!
-//! After heavy NPU use the driver can get into a state where a second
-//! OpenVINO Core in a process breaks the first one's NPU requests: the next
-//! inference segfaults in `libze_loader` (`zeMemAllocHost`). vinoPop and
-//! vinoAuthFace crash on every NPU action until the driver is reloaded. The
-//! probe recreates the trigger in a throwaway process, as vinoPop's
-//! `vino_ai/npu_canary.py` does; the reload is a root oneshot unit that
-//! `install-npu-reset.sh` installs, with a polkit rule that lets the active
-//! local user start it.
+//! The stuck `intel_vpu` state, and the driver reload that clears it: a second
+//! OpenVINO Core in a process breaks the first one's NPU requests (the next
+//! inference segfaults in `libze_loader`). The probe recreates that in a
+//! throwaway process, as vinoPop's `npu_canary.py` does; the reload is the root
+//! unit `install-npu-reset.sh` installs, behind a polkit rule.
 
 use std::fs;
 use std::io::Read;
@@ -24,8 +19,7 @@ pub const RESET_UNIT: &str = "vino-npu-reset.service";
 const RESET_UNIT_PATH: &str = "/etc/systemd/system/vino-npu-reset.service";
 
 /// A tiny model on the NPU, a second Core listing devices, then the model
-/// again: the second inference is the one that segfaults. vinoPop's probe,
-/// with telemetry blocked the same way.
+/// again: the second inference segfaults. vinoPop's probe.
 const PROBE: &str = r#"
 import sys
 sys.modules["openvino_telemetry"] = None
@@ -48,12 +42,16 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 const SIGSEGV: i32 = 11;
 
+/// A sticky directory (like /tmp) lets others add entries but not replace ours.
+const STICKY: u32 = 0o1000;
+const GROUP_WRITE: u32 = 0o020;
+const OTHER_WRITE: u32 = 0o002;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verdict {
     Healthy,
     Stuck,
-    /// The probe failed some other way, which says nothing about this state:
-    /// no openvino in that Python, no NPU, a timeout.
+    /// The probe failed some other way: no openvino in that Python, no NPU, a timeout.
     Unknown(String),
 }
 
@@ -62,6 +60,8 @@ pub fn probe(python: &Path) -> Verdict {
     probe_with(python, &["-I", "-c", PROBE], PROBE_TIMEOUT)
 }
 
+/// Drains stderr on its own thread so a chatty failure can't fill the pipe
+/// (pinned by `tests::a_noisy_probe_does_not_block_on_its_pipe`).
 fn probe_with(program: &Path, args: &[&str], timeout: Duration) -> Verdict {
     let mut child = match Command::new(program)
         .args(args)
@@ -73,8 +73,6 @@ fn probe_with(program: &Path, args: &[&str], timeout: Duration) -> Verdict {
         Ok(child) => child,
         Err(e) => return Verdict::Unknown(format!("couldn't run {}: {e}", program.display())),
     };
-    // Drained on its own thread, so a chatty failure can't fill the pipe and
-    // hang the probe until the timeout.
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let reader = thread::spawn(move || {
         let mut text = String::new();
@@ -110,35 +108,34 @@ fn verdict(status: ExitStatus, stderr: &str) -> Verdict {
     } else if status.signal() == Some(SIGSEGV) {
         Verdict::Stuck
     } else {
-        // A Python traceback ends with the line that says what went wrong.
-        let last = stderr.lines().rev().find(|l| !l.trim().is_empty());
-        Verdict::Unknown(match last {
+        Verdict::Unknown(match last_nonblank_line(stderr) {
             Some(line) => line.trim().to_string(),
             None => format!("probe failed ({status})"),
         })
     }
 }
 
-/// The interpreter of a running Python OpenVINO app: `argv[0]` when it is an
-/// absolute path to a `python*`, which for the vino apps is their venv's.
-/// `/proc/<pid>/exe` would be the base interpreter, outside the venv, which
-/// can't import openvino.
+fn last_nonblank_line(text: &str) -> Option<&str> {
+    text.lines().rev().find(|l| !l.trim().is_empty())
+}
+
+/// `argv[0]` of a running Python OpenVINO app when it is an absolute path to a
+/// `python*`: their venv's, where `/proc/<pid>/exe` is the base interpreter,
+/// which can't import openvino.
 pub fn python_of(cmdline: &[String]) -> Option<PathBuf> {
     let argv0 = Path::new(cmdline.first()?);
     let name = argv0.file_name()?.to_str()?;
     (argv0.is_absolute() && name.starts_with("python")).then(|| argv0.to_path_buf())
 }
 
-/// `--probe-python` if given, else the newest interpreter seen running an
-/// OpenVINO app that still exists and only we or root can change, else
-/// `python3` from `PATH`.
+/// `--probe-python`, else the newest trusted interpreter seen running an
+/// OpenVINO app, else `python3` (pinned by `tests::a_venv_nobody_else_can_write_is_trusted`,
+/// `tests::a_world_writable_interpreter_is_refused`).
 pub fn pick_python(explicit: Option<&Path>, seen: &[PathBuf]) -> PathBuf {
-    // /proc/<pid> belongs to the process's effective uid and gid.
-    let me = fs::metadata("/proc/self").map(|m| (m.uid(), m.gid()));
     explicit
         .map(Path::to_path_buf)
         .or_else(|| {
-            let me = me.ok()?;
+            let me = effective_ids()?;
             seen.iter()
                 .rev()
                 .find(|p| p.is_file() && trusted(p, me))
@@ -147,10 +144,14 @@ pub fn pick_python(explicit: Option<&Path>, seen: &[PathBuf]) -> PathBuf {
         .unwrap_or_else(|| "python3".into())
 }
 
-/// Whether nobody but us and root could have put `python` there. A venv's
-/// interpreter is a symlink to the system one, but Python reads `pyvenv.cfg`
-/// and `site-packages` from next to the link, so the link's directories count
-/// as much as the file it points at.
+fn effective_ids() -> Option<(u32, u32)> {
+    let meta = fs::metadata("/proc/self").ok()?;
+    Some((meta.uid(), meta.gid()))
+}
+
+/// Whether nobody but us and root could have put `python` there. Python reads
+/// `pyvenv.cfg` from next to a venv's link, so the link's directories count as
+/// much as the file it points at.
 fn trusted(python: &Path, me: (u32, u32)) -> bool {
     let Ok(target) = python.canonicalize() else {
         return false;
@@ -160,26 +161,22 @@ fn trusted(python: &Path, me: (u32, u32)) -> bool {
         .all(|p| p.ancestors().all(|dir| safe_owner(dir, me)))
 }
 
-/// Owned by us or root, and not writable by anyone else. Group-writable is
-/// fine for our own group: Fedora's `umask 002` makes that the default for
-/// a user's files, with a group of their own.
+/// Owned by us or root, and not writable by anyone else; our own group may
+/// (Fedora's `umask 002`).
 fn safe_owner(path: &Path, (uid, gid): (u32, u32)) -> bool {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return false;
     };
-    if meta.uid() != uid && meta.uid() != 0 {
-        return false;
-    }
-    // A symlink's own mode is always 0777 and means nothing.
-    if meta.file_type().is_symlink() {
-        return true;
-    }
+    let ours_or_root = meta.uid() == uid || meta.uid() == 0;
+    let mode_is_always_0777 = meta.file_type().is_symlink();
+    ours_or_root && (mode_is_always_0777 || others_cannot_replace(&meta, gid))
+}
+
+fn others_cannot_replace(meta: &fs::Metadata, our_gid: u32) -> bool {
     let mode = meta.permissions().mode();
-    // Like /tmp: others can add entries, but not replace ours.
-    if meta.is_dir() && mode & 0o1000 != 0 {
-        return true;
-    }
-    (mode & 0o020 == 0 || meta.gid() == gid) && mode & 0o002 == 0
+    let sticky_dir = meta.is_dir() && mode & STICKY != 0;
+    let group_may_write = mode & GROUP_WRITE != 0 && meta.gid() != our_gid;
+    sticky_dir || (!group_may_write && mode & OTHER_WRITE == 0)
 }
 
 /// Whether `install-npu-reset.sh` has been run.
@@ -188,9 +185,8 @@ pub fn reset_installed() -> bool {
     Path::new(RESET_UNIT_PATH).is_file()
 }
 
-/// Starts the reload unit and waits for it. `modprobe -r` refuses while
-/// anything holds `/dev/accel`, so this fails rather than pull the NPU out
-/// from under a running app.
+/// Starts the reload unit and waits. `modprobe -r` refuses while anything holds
+/// `/dev/accel`, so this fails rather than pull the NPU from a running app.
 #[cfg(feature = "tray")]
 pub fn reset() -> Result<(), String> {
     let out = Command::new("systemctl")
@@ -224,18 +220,30 @@ mod tests {
     #[test]
     fn a_segfault_means_stuck() {
         assert_eq!(sh("kill -SEGV $$"), Verdict::Stuck);
+    }
+
+    #[test]
+    fn a_clean_exit_means_healthy() {
         assert_eq!(sh("exit 0"), Verdict::Healthy);
     }
 
     #[test]
-    fn other_failures_say_why() {
+    fn a_failure_says_the_last_line_of_its_traceback() {
         assert_eq!(
             sh(
                 "echo Traceback >&2; echo \"ModuleNotFoundError: No module named 'openvino'\" >&2; exit 1"
             ),
             Verdict::Unknown("ModuleNotFoundError: No module named 'openvino'".into())
         );
+    }
+
+    #[test]
+    fn a_crash_other_than_a_segfault_is_unknown() {
         assert!(matches!(sh("kill -ABRT $$"), Verdict::Unknown(_)));
+    }
+
+    #[test]
+    fn a_missing_interpreter_is_unknown() {
         assert!(matches!(
             probe_with(Path::new("/nonexistent/python3"), &[], Duration::from_secs(1)),
             Verdict::Unknown(m) if m.starts_with("couldn't run")
@@ -252,9 +260,11 @@ mod tests {
 
     #[test]
     fn a_noisy_probe_does_not_block_on_its_pipe() {
-        // Far more than a pipe buffer holds.
+        const FAR_MORE_THAN_A_PIPE_HOLDS: usize = 1_000_000;
         assert_eq!(
-            sh("head -c 1000000 /dev/zero | tr '\\0' x >&2; exit 0"),
+            sh(&format!(
+                "head -c {FAR_MORE_THAN_A_PIPE_HOLDS} /dev/zero | tr '\\0' x >&2; exit 0"
+            )),
             Verdict::Healthy
         );
     }
@@ -283,54 +293,101 @@ mod tests {
         assert_eq!(pick_python(None, &[gone]), PathBuf::from("python3"));
     }
 
-    /// Another user's venv, or one anyone can write to, would run their code
-    /// as us when the tray checks the driver.
+    fn chmod(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    struct Venv {
+        _scratch: tempfile::TempDir,
+        root: PathBuf,
+        python: PathBuf,
+    }
+
+    impl Venv {
+        fn new() -> Self {
+            let scratch = tempfile::tempdir().unwrap();
+            let root = scratch.path().to_path_buf();
+            let bin = root.join("venv/bin");
+            fs::create_dir_all(&bin).unwrap();
+            for dir in [&root, &root.join("venv"), &bin] {
+                chmod(dir, 0o755);
+            }
+            let python = bin.join("python3");
+            fs::write(&python, "").unwrap();
+            chmod(&python, 0o755);
+            Venv {
+                _scratch: scratch,
+                root,
+                python,
+            }
+        }
+
+        fn picked(&self) -> PathBuf {
+            pick_python(None, std::slice::from_ref(&self.python))
+        }
+
+        fn link_python_to(&self, target: &Path) {
+            fs::remove_file(&self.python).unwrap();
+            std::os::unix::fs::symlink(target, &self.python).unwrap();
+        }
+    }
+
     #[test]
-    fn an_interpreter_others_can_change_is_refused() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path();
-        let bin = root.join("venv/bin");
-        fs::create_dir_all(&bin).unwrap();
-        let chmod =
-            |p: &Path, mode| fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
-        chmod(root, 0o755);
-        chmod(&root.join("venv"), 0o755);
-        chmod(&bin, 0o755);
-        let python = bin.join("python3");
-        fs::write(&python, "").unwrap();
-        chmod(&python, 0o755);
-        let seen = std::slice::from_ref(&python);
-        assert_eq!(pick_python(None, seen), python);
+    fn a_venv_nobody_else_can_write_is_trusted() {
+        let venv = Venv::new();
+        assert_eq!(venv.picked(), venv.python);
+    }
 
-        chmod(&python, 0o757);
-        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
-        chmod(&python, 0o755);
+    #[test]
+    fn a_world_writable_interpreter_is_refused() {
+        let venv = Venv::new();
+        chmod(&venv.python, 0o757);
+        assert_eq!(venv.picked(), PathBuf::from("python3"));
+    }
 
-        // Anyone could swap the file, or drop a pyvenv.cfg next to it.
-        chmod(&bin, 0o777);
-        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
-        chmod(&bin, 0o755);
-        chmod(&root.join("venv"), 0o757);
-        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
-        chmod(&root.join("venv"), 0o755);
+    #[test]
+    fn a_world_writable_bin_dir_is_refused() {
+        let venv = Venv::new();
+        chmod(venv.python.parent().unwrap(), 0o777);
+        assert_eq!(venv.picked(), PathBuf::from("python3"));
+    }
 
-        // The usual venv shape: a link to a root-owned interpreter.
-        fs::remove_file(&python).unwrap();
-        std::os::unix::fs::symlink("/bin/sh", &python).unwrap();
-        assert_eq!(pick_python(None, seen), python);
-        // A link into a directory anyone can write to.
-        let open = root.join("open");
+    #[test]
+    fn a_world_writable_venv_dir_is_refused() {
+        let venv = Venv::new();
+        chmod(&venv.root.join("venv"), 0o757);
+        assert_eq!(venv.picked(), PathBuf::from("python3"));
+    }
+
+    #[test]
+    fn a_link_to_a_root_owned_interpreter_is_trusted() {
+        let venv = Venv::new();
+        venv.link_python_to(Path::new("/bin/sh"));
+        assert_eq!(venv.picked(), venv.python);
+    }
+
+    #[test]
+    fn a_link_into_a_world_writable_directory_is_refused() {
+        let venv = Venv::new();
+        let open = venv.root.join("open");
         fs::create_dir_all(&open).unwrap();
         chmod(&open, 0o777);
         fs::write(open.join("python3"), "").unwrap();
         chmod(&open.join("python3"), 0o755);
-        fs::remove_file(&python).unwrap();
-        std::os::unix::fs::symlink(open.join("python3"), &python).unwrap();
-        assert_eq!(pick_python(None, seen), PathBuf::from("python3"));
+        venv.link_python_to(&open.join("python3"));
+        assert_eq!(venv.picked(), PathBuf::from("python3"));
+    }
 
-        // Root's files, and an explicit --probe-python, are taken as given.
+    #[test]
+    fn roots_files_are_taken_as_given() {
         let sh = PathBuf::from("/bin/sh");
         assert_eq!(pick_python(None, std::slice::from_ref(&sh)), sh);
-        assert_eq!(pick_python(Some(&python), &[]), python);
+    }
+
+    #[test]
+    fn an_explicit_probe_python_is_taken_as_given() {
+        let venv = Venv::new();
+        chmod(&venv.python, 0o777);
+        assert_eq!(pick_python(Some(&venv.python), &[]), venv.python);
     }
 }
