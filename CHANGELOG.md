@@ -5,6 +5,14 @@ All notable changes to vinoWatch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-17
+
+### Changed
+
+- `vinowatch --version`, the help header, the tray's version row and its update check say `dev` for any build that isn't a release. Release binaries are stamped with their tag when CI builds them, so vinoPilot can tell a release from a source build, and a source build is never offered an update.
+- `--json` is written with serde_json, with its exact bytes pinned by a test, and the menu-row icons are encoded with the png crate.
+- Internal: the poll, the tray and install.sh are split into named steps and modules, and the code's comments are cut down to the constraints they state.
+
 ## [0.6.0] - 2026-11-14
 
 ### Added
