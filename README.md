@@ -1,30 +1,32 @@
 # vinoWatch
 
-A small tray daemon that shows what the OpenVINO apps on your machine cost: CPU, RAM and, on Intel machines with the `ivpu` driver, NPU load.
+A lightweight Linux system tray daemon that monitors the resource usage of OpenVINO applications: CPU, RAM, and (on Intel hardware with the `ivpu` driver) NPU load.
 
-It knows the other vino projects by name:
+## Recognized applications
 
-| App | Seen as |
+`vinoWatch` identifies other `vino*` applications by name:
+
+| App | Detected as |
 |---|---|
 | [vinoWhisper](https://github.com/karanshukla/vinoWhisper) | `vinowhisper-server`, `-caption`, `-dictate`, `-replay` |
 | [vinoSpeak](https://github.com/karanshukla/vinoSpeak) | `vinospeak` |
-| [vinoPop](https://github.com/karanshukla/vinoPop) | its `vinopop` launcher, or a `main.py` in its checkout |
+| [vinoPop](https://github.com/karanshukla/vinoPop) | `vinopop` launcher, or `main.py` inside a vinoPop checkout |
 | [vinoAuthFace](https://github.com/karanshukla/vinoAuthFace) | `vinoauthface`, `vinoauthface-auth` |
 | [vinoSearch](https://github.com/karanshukla/vinoSearch) | `vinosearch` |
 
-Anything else that loads `libopenvino*` is listed too, just without an app name.
+Any other process that maps `libopenvino*` is also monitored and listed by its process name.
 
-## The tray
+## System tray
 
-| Where | What it shows |
+| Element | What it displays |
 |---|---|
-| Tooltip | the NPU load, a process count, and how much RAM the OpenVINO apps hold against what the machine has free |
-| Menu | one row per process, each with its own CPU, RAM and NPU meters |
-| Icon | green while OpenVINO runs or the NPU is busy, amber when available RAM drops under 15% (`--warn-below PERCENT`), hidden once the NPU has been idle for 5 minutes |
+| Tooltip | Current NPU load, OpenVINO process count, and total RAM used by OpenVINO apps compared to available memory |
+| Menu | One row per monitored process, each with its own CPU, RAM, and NPU indicators |
+| Icon | Green while an OpenVINO process is running or the NPU is busy; amber when available RAM drops below 15% (`--warn-below PERCENT`) or the NPU driver is stuck; hidden (passive) after the NPU has been idle for 5 minutes |
 
-The menu also has **Check NPU driver** and **Reset NPU driver**, for the [stuck `intel_vpu` driver](docs/npu-driver.md).
+The tray menu also includes **Check NPU driver** and **Reset NPU driver** actions for handling a [stuck `intel_vpu` driver](docs/npu-driver.md).
 
-It only changes the icon and tooltip: no popups, and nothing is ever stopped for you. The colours and meters are spelled out in [What the tray shows](docs/how-it-works.md#what-the-tray-shows).
+`vinoWatch` only updates the tray icon and tooltip; it never displays unsolicited popups or terminates processes automatically. See [What the tray shows](docs/how-it-works.md#what-the-tray-shows) for icon color and meter details.
 
 ## Install
 
@@ -32,34 +34,36 @@ It only changes the icon and tooltip: no popups, and nothing is ever stopped for
 curl -fsSL https://github.com/karanshukla/vinoWatch/releases/latest/download/install.sh | sh
 ```
 
-This downloads the latest release, checks it against `SHA256SUMS`, and installs under your home:
+The installer downloads the latest release, verifies it against `SHA256SUMS`, and installs everything under your home directory:
 
-| What | Where |
+| Component | Location |
 |---|---|
-| `vinowatch` | `~/.local/bin` |
-| icons | `~/.local/share/icons/hicolor` |
-| the NPU reset installer | `~/.local/share/vinowatch` |
-| a systemd user unit that starts the tray with your graphical session | enabled |
+| `vinowatch` binary | `~/.local/bin` |
+| Icons | `~/.local/share/icons/hicolor` |
+| NPU reset installer | `~/.local/share/vinowatch` |
+| systemd user service | Enabled to start with your graphical session |
 
-It needs `curl` or `wget`, `tar`, `sha256sum` and a systemd user session. The tray needs a StatusNotifierItem host: built in on Plasma, an extension on GNOME, Waybar on sway and Hyprland. [Desktops](docs/desktops.md) has the table.
+**Requirements:** `curl` or `wget`, `tar`, `sha256sum`, and a systemd user session. The tray requires a StatusNotifierItem host (built in on KDE Plasma, available via an extension on GNOME, and provided by Waybar on sway and Hyprland). See [Desktops](docs/desktops.md) for the full compatibility table.
 
-From a checkout, `./install.sh` builds from source instead. `./install.sh --uninstall` removes all of it; run `install-npu-reset.sh --uninstall` first if you installed the reset unit.
+Running `./install.sh` inside a Git checkout builds from source instead of downloading a release. Run `./install.sh --uninstall` to remove `vinoWatch` (if you installed the NPU reset service, run `install-npu-reset.sh --uninstall` first).
 
-### Upgrade
+### Upgrading
 
-Use **Check for updates** in the tray menu, under the version. It asks GitHub only when you click it, then offers **Update to vN**, which installs that release the same way and restarts the tray. `VINOWATCH_VERSION=vN vinowatch-upgrade` does the same from a terminal.
+Click **Check for updates** under the version number in the tray menu. `vinoWatch` only queries GitHub when you trigger that action; if a newer release exists, it offers **Update to vN**, which downloads, verifies, installs the new release, and restarts the tray. You can perform the same upgrade from a terminal with `VINOWATCH_VERSION=vN vinowatch-upgrade`.
 
-## Console
+## Console mode
 
-```
+```sh
 vinowatch --console [SECONDS]    # print every SECONDS (default 2)
-vinowatch --once                 # one poll, then exit
-vinowatch --json                 # one JSON object per poll, for scripts
-vinowatch --warn-below 25        # flag low memory under 25% available
-vinowatch --check-npu            # is the NPU driver stuck? exit 0 OK, 1 stuck, 3 couldn't tell
+vinowatch --once                 # run one poll, then exit
+vinowatch --json                 # emit one JSON object per poll for scripts
+vinowatch --warn-below 25        # warn when available memory falls below 25%
+vinowatch --check-npu            # probe the NPU driver (exit 0 OK, 1 stuck, 3 unknown)
 ```
 
-```
+Example output:
+
+```text
 $ vinowatch --once 1
 vinoWatch: monitoring OpenVINO processes every 1s
 NPU 37%
@@ -68,35 +72,43 @@ OpenVINO apps hold 1.4 GiB of 7.6 GiB RAM, 4.9 GiB available
   vinoSpeak (python) pid 4311: CPU 0.0%, RAM 640 MiB
 ```
 
-Build without the tray (and its D-Bus dependency) with `cargo build --release --no-default-features`.
+To build without the tray and its D-Bus dependencies:
+
+```sh
+cargo build --release --no-default-features
+```
 
 ## Stuck NPU driver
 
-After heavy NPU use the `intel_vpu` driver can get stuck, and vinoPop and vinoAuthFace then crash on every NPU action. The tray can check for it (**Check NPU driver**, on demand only) and reload the driver without a reboot (**Reset NPU driver**). The reset needs a one-time root step, which `install.sh` doesn't do:
+After heavy NPU usage, the `intel_vpu` kernel driver can enter a stuck state where `vinoPop` and `vinoAuthFace` crash on NPU operations. You can test for this state on demand via **Check NPU driver** in the tray menu and reload the driver without rebooting via **Reset NPU driver**.
+
+Driver resets require a one-time root setup that `install.sh` does not run automatically:
 
 ```sh
 sudo ~/.local/share/vinowatch/install-npu-reset.sh
 ```
 
-[Stuck NPU driver](docs/npu-driver.md) has the probe, the polkit rule it installs and what blocks a reset.
+See [Stuck NPU driver](docs/npu-driver.md) for details on the probe, the polkit rule, and what can block a reset.
 
-## Limits
+## Limitations
 
-- Other users' processes can't be inspected (their `maps` files are unreadable), so they aren't listed.
-- A process that lives for less than one poll interval, like a single `sudo` face check, can be missed. Lower the interval, or use `--json` with a short one.
-- No GPU or energy numbers yet. The NPU counter is only read from the `ivpu` driver, and it is device-wide: there is no per-process NPU figure.
-- The NPU path is written against the driver's documented sysfs file and unit-tested with a fake one; it hasn't been run against a real NPU yet. The same goes for the stuck-driver probe and reset: the polkit rule and the reload were checked on a machine without an NPU, not on a stuck driver.
+- Processes owned by other users cannot be inspected because their `/proc/<pid>/maps` files are unreadable, so they are omitted.
+- Short-lived processes that exit within a single poll interval (such as a single `sudo` face authentication check) may be missed. Lower the poll interval or use `--json` with a shorter interval to catch them.
+- GPU and power/energy metrics are not collected yet. The NPU counter is read only from the `ivpu` driver and reports device-wide utilization rather than per-process NPU usage.
+- The NPU monitoring code was written against the driver's documented sysfs interface and unit-tested with a simulated sysfs, and has not yet been tested on real NPU hardware. Likewise, the stuck-driver probe, polkit rule, and module reload were tested on a machine without an NPU rather than against a live stuck driver.
 
-## Docs
+## Documentation
 
-| Page | What's in it |
+| Page | Contents |
 |---|---|
-| [How it works](docs/how-it-works.md) | which processes are listed, where the NPU, RAM and CPU numbers come from, what each icon colour means |
-| [Desktops](docs/desktops.md) | tray hosts per desktop, sway and Hyprland start-up, X11 panels, notifications |
-| [Distros](docs/distros.md) | what the install needs and writes, immutable distros, SteamOS, NixOS |
-| [Stuck NPU driver](docs/npu-driver.md) | the check, the reset and its root step |
-| [Hand-written code](docs/hand-written.md) | what `serde_json`, `png` and `lexopt` cost when tried |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | setup, tests, adding another vino app, releases |
-| [SECURITY.md](SECURITY.md) | security notes |
+| [How it works](docs/how-it-works.md) | Process detection, NPU/RAM/CPU metric sources, and tray icon colors and meters |
+| [Desktops](docs/desktops.md) | StatusNotifierItem tray hosts per desktop, sway/Hyprland startup, X11 panels, and notifications |
+| [Distros](docs/distros.md) | Install requirements and file paths, immutable distros, SteamOS, and NixOS |
+| [Stuck NPU driver](docs/npu-driver.md) | The driver probe, reset service, and polkit setup |
+| [Hand-written code](docs/hand-written.md) | Binary-size and dependency comparisons for `serde_json`, `png`, and `lexopt` |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, adding a new `vino*` app, and releases |
+| [SECURITY.md](SECURITY.md) | Security model and vulnerability reporting |
 
-MIT licensed.
+## License
+
+MIT.

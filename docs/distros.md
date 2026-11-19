@@ -1,32 +1,39 @@
 # Distros
 
-The release binaries are static (musl), so the `curl | sh` install works the same on Fedora, Ubuntu/Debian, Arch and openSUSE.
+Release binaries are statically linked with musl, so the `curl | sh` installer works identically across Fedora, Ubuntu/Debian, Arch, and openSUSE.
 
-| Needs | For |
+## Requirements
+
+| Requirement | Used for |
 |---|---|
-| `curl` or `wget` (`wget -qO- <url> \| sh` works too), `tar`, `sha256sum` | the install |
-| a systemd user session | the autostart |
-| a Rust toolchain at `rust-version` (1.95) or newer: rustup, or the distro's `cargo` where it's that new | building from a checkout |
+| `curl` or `wget` (`wget -qO- <url> \| sh` also works), `tar`, `sha256sum` | Downloading and verifying releases |
+| A systemd user session | Autostarting the tray service |
+| Rust toolchain at `rust-version` (`1.95`) or newer (via `rustup` or distro `cargo`) | Building from a Git checkout |
 
-Everything `install.sh` writes is under your home, so it never touches `/usr`. `install-npu-reset.sh` writes only to `/etc/systemd/system` and `/etc/polkit-1/rules.d`, and runs `/usr/sbin/modprobe`, which is where Fedora, Debian/Ubuntu, Arch and openSUSE all have it.
+Everything `install.sh` creates lives inside your home directory and leaves `/usr` untouched. The optional `install-npu-reset.sh` script writes only to `/etc/systemd/system` and `/etc/polkit-1/rules.d`, and invokes `/usr/sbin/modprobe` (present at that path on Fedora, Debian/Ubuntu, Arch, and openSUSE).
 
 ## Immutable distros
 
-On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the `curl | sh` install; nothing needs layering with `rpm-ostree` or `transactional-update`. `sudo ~/.local/share/vinowatch/install-npu-reset.sh` works too, since `/etc` is writable on all of them.
+On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the standard `curl | sh` install—no `rpm-ostree` or `transactional-update` package layering is needed. `sudo ~/.local/share/vinowatch/install-npu-reset.sh` also works because `/etc` is writable on all of them.
 
-To build from source there, build in a toolbox (or distrobox) and install from the host, where `systemctl --user` reaches your session:
+To build from source on an immutable system, compile inside a `toolbox` (or `distrobox`) container and run `./install.sh` on the host so `systemctl --user` can reach your session:
 
 ```sh
 toolbox run cargo build --release --locked   # after: toolbox run sudo dnf install cargo
-./install.sh                                  # no cargo on the host: installs target/release/vinowatch
+./install.sh                                  # installs target/release/vinowatch without host cargo
 ```
 
-On openSUSE Aeon and Kalpa there's no toolbox: use distrobox with a Tumbleweed image (`distrobox create -i registry.opensuse.org/opensuse/tumbleweed`), then `distrobox enter -- sudo zypper install cargo` and build with `distrobox enter -- cargo build --release --locked`.
+On openSUSE Aeon and Kalpa (which do not ship `toolbox`), use `distrobox` with a Tumbleweed image:
 
-GNOME needs the AppIndicator extension for the tray, and stock Silverblue and Aeon don't ship it. Installing it per user from [extensions.gnome.org](https://extensions.gnome.org/extension/615/appindicator-support/) works with no layering; Bluefin ships it.
+```sh
+distrobox create -i registry.opensuse.org/opensuse/tumbleweed
+distrobox enter -- sudo zypper install cargo
+distrobox enter -- cargo build --release --locked
+```
+
+On GNOME-based immutable distros, the tray requires the AppIndicator extension, which stock Silverblue and Aeon do not preinstall (Bluefin includes it). Installing it per user from [extensions.gnome.org](https://extensions.gnome.org/extension/615/appindicator-support/) works without layering packages.
 
 ## SteamOS and NixOS
 
-`install-npu-reset.sh` can't install on SteamOS, since an update resets `/etc`. That doesn't matter there: Steam Deck hardware has no NPU.
-
-On NixOS `/etc` is read-only and there's no `/usr/sbin/modprobe`, so the script stops and says so; declare the unit in `configuration.nix` instead.
+- **SteamOS:** `install-npu-reset.sh` cannot persist across system updates because updates reset `/etc`. This has no practical impact on Steam Deck hardware, which does not include an Intel NPU.
+- **NixOS:** `/etc` is read-only and `/usr/sbin/modprobe` does not exist, so `install-npu-reset.sh` exits with an explanation. Declare the reset unit directly in `configuration.nix` instead.
