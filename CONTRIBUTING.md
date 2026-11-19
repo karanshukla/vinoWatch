@@ -1,19 +1,19 @@
 # Contributing
 
-vinoWatch was written on a machine with no Intel NPU, so the most useful thing you can bring is a report from one: does the `NPU` figure move when you run vinoWhisper or vinoSpeak on the NPU, and does the `NPU open` marker land on the right process? Attach `vinowatch --json --once` taken while the app runs.
+`vinoWatch` was developed on a machine without an Intel NPU, so real-world NPU hardware reports are especially helpful. If you have an Intel NPU, please let us know whether the `NPU` percentage updates while running `vinoWhisper` or `vinoSpeak` on the NPU and whether the `NPU open` marker appears on the expected process—ideally with the output of `vinowatch --json --once` captured while the app is active.
 
-## Setup
+## Development setup
 
-Plain cargo. Nothing needs OpenVINO or an NPU; the tests build a fake `/proc` and a fake sysfs.
+`vinoWatch` uses a standard Cargo workflow. Running the test suite does not require OpenVINO or an Intel NPU; tests operate against simulated `/proc` and sysfs trees.
 
 ```bash
 cargo test
-cargo test --no-default-features   # the console-only build
+cargo test --no-default-features   # console-only build
 ```
 
-To see it against the real thing, run any vino app that loads OpenVINO (for example a script that does `import openvino; openvino.Core()` from one of their venvs) and `cargo run -- --console 1`.
+To test against live processes, run any `vino*` app that loads OpenVINO (or a small script that executes `import openvino; openvino.Core()` inside one of their virtual environments) alongside `cargo run -- --console 1`.
 
-## Before you push
+## Before pushing
 
 ```bash
 cargo fmt --check
@@ -23,22 +23,37 @@ cargo test
 cargo deny check
 ```
 
-If you touched `install.sh`, also run `cargo build && tests/install-e2e.sh target/debug/vinowatch` (no network, no real `$HOME`). CI also builds the release tarballs on every PR and runs them, and fails if line coverage (`cargo llvm-cov`) drops under the floor in `ci.yml`.
+If you modified `install.sh`, also run the end-to-end installer test (which runs offline without touching your real `$HOME`):
 
-- `tests/cli.rs` holds the binary's contract with scripts (exit codes, `--json` shape). Change it when you change those, and say so in the changelog.
+```bash
+cargo build && tests/install-e2e.sh target/debug/vinowatch
+```
 
-- A change to how processes are found or named needs a test with a fake `/proc` entry (see `src/detect.rs`, and `fake_openvino_process` in `src/sample.rs`).
-- A change that can only be verified on an NPU: say so in the PR instead of faking a test.
-- Comments are the last resort: extract, name, or pin a rule with a test pair first, and cite the test from the code it governs. See [docs/comment-style.md](docs/comment-style.md); `tests/doc_links.rs` checks the citations. Measurements go in `docs/` with their date.
-- Before swapping hand-written code for a crate, read [docs/hand-written.md](docs/hand-written.md): three were measured, one was taken.
-- Commits are conventional (`feat:`, `fix:`, `docs:`, ...); the changelog is generated from them with `git cliff`.
-- Every Actions `uses:` is pinned to a commit SHA with a version comment.
-- A `deny.toml` advisory ignore needs a written reason next to it.
+CI additionally builds and tests the release tarballs on every pull request and enforces the `cargo llvm-cov` line coverage floor configured in `ci.yml`.
+
+## Guidelines
+
+- `tests/cli.rs` defines the CLI contract for scripts (exit codes and `--json` schema). Update it whenever those change and document the change in the changelog.
+- Any change to process discovery or app naming requires a unit test with a simulated `/proc` entry (see `src/detect.rs` and `fake_openvino_process` in `src/sample.rs`).
+- If a change can only be verified on real NPU hardware, note that clearly in the pull request rather than adding a mock test.
+- Keep comments minimal: prefer extracting functions, using clear names, or pinning invariants with paired tests, and cite the governing test in comments. See [docs/comment-style.md](docs/comment-style.md); `tests/doc_links.rs` validates citations. Record performance or size measurements in `docs/` with their date.
+- Before replacing hand-written code with an external crate, review [docs/hand-written.md](docs/hand-written.md) for the measured size and dependency trade-offs.
+- Use Conventional Commits (`feat:`, `fix:`, `docs:`, etc.); `CHANGELOG.md` is generated with `git cliff`.
+- Pin every GitHub Actions `uses:` reference to a full commit SHA with a version comment.
+- Include a written rationale next to every advisory ignore in `deny.toml`.
 
 ## Adding another vino app
 
-Add its marker to the `MARKERS` table in `src/detect.rs`, a variant to `Project`, a row to the README table, and a case to `names_each_project_from_its_command_line`. Match on whatever appears in its command line; check with `ps -eo pid,args` while it runs.
+1. Add the app's matching marker to the `MARKERS` table in `src/detect.rs` and add a variant to `Project`. Match against what appears in the process command line (inspect with `ps -eo pid,args` while the app is running).
+2. Add a row to the recognized-applications table in `README.md`.
+3. Add a test case to `names_each_project_from_its_command_line`.
 
 ## Releases
 
-Versions follow Cargo.toml. Bump it, run `git cliff -c cliff.toml --tag vX.Y.Z -o CHANGELOG.md`, commit, then push the tag `vX.Y.Z`. `release.yml` refuses a tag that doesn't match Cargo.toml, isn't on main, or has no `## [X.Y.Z]` section in CHANGELOG.md (that section becomes the release notes), builds static x86_64 and aarch64 binaries, and publishes them with `SHA256SUMS`.
+Versions follow `Cargo.toml`. To cut a release:
+
+1. Bump the version in `Cargo.toml`.
+2. Regenerate the changelog: `git cliff -c cliff.toml --tag vX.Y.Z -o CHANGELOG.md`.
+3. Commit the changes and push the tag `vX.Y.Z`.
+
+`release.yml` validates that the tag matches `Cargo.toml`, points to a commit on `main`, and has a matching `## [X.Y.Z]` section in `CHANGELOG.md` (used as the release notes). It then builds static `x86_64` and `aarch64` binaries and publishes them alongside `SHA256SUMS`.

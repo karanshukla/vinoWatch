@@ -1,40 +1,42 @@
 # Stuck NPU driver
 
-After heavy NPU use the `intel_vpu` driver can get stuck: any process with two OpenVINO Cores touching the NPU segfaults in `libze_loader`, so vinoPop crashes on every AI action and vinoAuthFace on every scan. Reloading the driver clears it without a reboot.
+After heavy NPU workloads, the `intel_vpu` kernel driver can enter a stuck state where any process creating two OpenVINO `Core` instances on the NPU segfaults inside `libze_loader`. When this happens, `vinoPop` crashes on AI actions and `vinoAuthFace` crashes on every scan. Reloading the kernel driver clears the state without rebooting.
 
-## Check
+## Checking the driver
 
-With an NPU present the tray menu has **Check NPU driver**. It runs a ~0.3 s probe on demand, never on a timer, and shows the result as a desktop notification as well as in the menu and tooltip. A stuck driver turns the icon amber and keeps it in view.
+When an NPU is present, the tray menu includes **Check NPU driver**. It runs a ~0.3 s probe strictly on demand (never on a timer) and displays the result as a desktop notification as well as in the tray menu and tooltip. If the driver is stuck, the tray icon turns amber and stays visible.
 
-The probe is vinoPop's: a toy model on the NPU, a second Core, the model again. A segfault means stuck.
+The probe uses the same check as `vinoPop`: it compiles and runs a small test model on the NPU, creates a second OpenVINO `Core`, and runs the model again. A segfault indicates that the driver is stuck.
 
-It needs a Python that can import openvino, picked in this order:
+The probe requires a Python interpreter that can import `openvino`, chosen in the following order:
 
 1. `--probe-python PATH`
-2. the venv interpreter of a vino app vinoWatch has seen running
-3. `python3`
+2. The virtual environment interpreter of a running `vino*` app observed by `vinoWatch`
+3. `python3` from `PATH`
 
-`vinowatch --check-npu` runs the same probe from a terminal:
+You can run the same probe from a terminal with `vinowatch --check-npu`:
 
 | Exit code | Meaning |
 |---|---|
-| 0 | OK |
-| 1 | stuck |
-| 3 | couldn't tell |
+| `0` | Driver OK |
+| `1` | Driver stuck |
+| `3` | Could not determine (e.g., no usable OpenVINO Python environment found) |
 
-## Reset
+## Resetting the driver
 
-**Reset NPU driver** reloads it (`modprobe -r intel_vpu && modprobe intel_vpu`) through a root oneshot unit, and checks again afterwards. That needs a one-time root step, which `install.sh` doesn't do:
+**Reset NPU driver** reloads the driver (`modprobe -r intel_vpu && modprobe intel_vpu`) through a root systemd oneshot service, then re-runs the probe to confirm recovery.
+
+Setting up the reset service requires a one-time root command that `install.sh` does not execute automatically:
 
 ```sh
 sudo ~/.local/share/vinowatch/install-npu-reset.sh
 sudo ~/.local/share/vinowatch/install-npu-reset.sh --uninstall
 ```
 
-`install.sh` keeps that script there, with the unit and rule it installs, from the same checked release (or checkout). `sudo ./install-npu-reset.sh` from a checkout or an unpacked release does the same.
+`install.sh` places `install-npu-reset.sh`, the service unit, and the polkit rule in `~/.local/share/vinowatch` from the same verified release (or Git checkout). Running `sudo ./install-npu-reset.sh` directly from a checkout or unpacked release does the same thing.
 
-It installs `vino-npu-reset.service` and a polkit rule that lets the active local user start that unit, and nothing else, without a password.
+The script installs `vino-npu-reset.service` and a polkit rule allowing the active local user to start that specific unit—and no other—without entering a password.
 
-`modprobe -r` refuses while anything has `/dev/accel` open, so the item lists the apps holding the NPU and stays disabled until you close them. Nothing is stopped for you. Holders that belong to other users aren't visible; then the reset fails and says so.
+Because `modprobe -r` refuses to unload `intel_vpu` while any process has `/dev/accel` open, the menu item lists all visible apps currently holding the NPU and remains disabled until you close them. `vinoWatch` never stops processes automatically. If another user's process holds `/dev/accel` open, `vinoWatch` cannot inspect it and the reset reports the failure.
 
-Neither the probe nor the reset has run against a stuck driver yet: the polkit rule and the reload were checked on a machine without an NPU.
+*Note: Neither the probe nor the reset has been run against a live stuck NPU driver yet; the polkit rule and module reload workflow were verified on a machine without an NPU.*
