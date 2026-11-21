@@ -33,8 +33,8 @@ fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 for f in vino-npu-reset.service vino-npu-reset.rules; do
-    if [ ! -f "$here/$f" ] || [ -L "$here/$f" ]; then
-        echo "$f isn't a regular file next to this script. Run it from a vinoWatch checkout or release." >&2
+    if [ ! -f "$here/$f" ]; then
+        echo "$f isn't next to this script. Run it from a vinoWatch checkout or release." >&2
         exit 1
     fi
 done

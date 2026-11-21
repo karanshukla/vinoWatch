@@ -150,9 +150,10 @@ fn effective_ids() -> Option<(u32, u32)> {
 }
 
 /// Whether nobody but us and root could have put `python` there. Python reads
-/// `pyvenv.cfg` from next to a venv's link (or one directory above), so the
-/// binary's own directory and its immediate parent must not be world-writable
-/// even when sticky (`/tmp/python3` or `/tmp/bin/python3` would read `/tmp/pyvenv.cfg`).
+/// `pyvenv.cfg` from the link's directory or the one above, and a sticky
+/// directory still lets others create that file, so sticky only counts above
+/// those two: `/tmp/python3` or `/tmp/bin/python3` would read `/tmp/pyvenv.cfg`
+/// (pinned by `tests::a_sticky_world_writable_venv_or_bin_dir_is_refused`).
 fn trusted(python: &Path, me: (u32, u32)) -> bool {
     let Ok(target) = python.canonicalize() else {
         return false;
@@ -179,7 +180,7 @@ fn others_cannot_replace(meta: &fs::Metadata, our_gid: u32, allow_sticky: bool) 
     let mode = meta.permissions().mode();
     let sticky_dir = allow_sticky && meta.is_dir() && mode & STICKY != 0;
     let group_may_write = mode & GROUP_WRITE != 0 && meta.gid() != our_gid;
-    !group_may_write && (sticky_dir || mode & OTHER_WRITE == 0)
+    sticky_dir || (!group_may_write && mode & OTHER_WRITE == 0)
 }
 
 /// Whether `install-npu-reset.sh` has been run.
