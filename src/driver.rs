@@ -150,33 +150,36 @@ fn effective_ids() -> Option<(u32, u32)> {
 }
 
 /// Whether nobody but us and root could have put `python` there. Python reads
-/// `pyvenv.cfg` from next to a venv's link, so the link's directories count as
-/// much as the file it points at.
+/// `pyvenv.cfg` from next to a venv's link (or one directory above), so the
+/// binary's own directory and its immediate parent must not be world-writable
+/// even when sticky (`/tmp/python3` or `/tmp/bin/python3` would read `/tmp/pyvenv.cfg`).
 fn trusted(python: &Path, me: (u32, u32)) -> bool {
     let Ok(target) = python.canonicalize() else {
         return false;
     };
-    [python, &target]
-        .iter()
-        .all(|p| p.ancestors().all(|dir| safe_owner(dir, me)))
+    [python, &target].iter().all(|p| {
+        p.ancestors()
+            .enumerate()
+            .all(|(depth, dir)| safe_owner(dir, me, depth >= 3))
+    })
 }
 
 /// Owned by us or root, and not writable by anyone else; our own group may
 /// (Fedora's `umask 002`).
-fn safe_owner(path: &Path, (uid, gid): (u32, u32)) -> bool {
+fn safe_owner(path: &Path, (uid, gid): (u32, u32), allow_sticky: bool) -> bool {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return false;
     };
     let ours_or_root = meta.uid() == uid || meta.uid() == 0;
     let mode_is_always_0777 = meta.file_type().is_symlink();
-    ours_or_root && (mode_is_always_0777 || others_cannot_replace(&meta, gid))
+    ours_or_root && (mode_is_always_0777 || others_cannot_replace(&meta, gid, allow_sticky))
 }
 
-fn others_cannot_replace(meta: &fs::Metadata, our_gid: u32) -> bool {
+fn others_cannot_replace(meta: &fs::Metadata, our_gid: u32, allow_sticky: bool) -> bool {
     let mode = meta.permissions().mode();
-    let sticky_dir = meta.is_dir() && mode & STICKY != 0;
+    let sticky_dir = allow_sticky && meta.is_dir() && mode & STICKY != 0;
     let group_may_write = mode & GROUP_WRITE != 0 && meta.gid() != our_gid;
-    sticky_dir || (!group_may_write && mode & OTHER_WRITE == 0)
+    !group_may_write && (sticky_dir || mode & OTHER_WRITE == 0)
 }
 
 /// Whether `install-npu-reset.sh` has been run.
@@ -357,6 +360,17 @@ mod tests {
         let venv = Venv::new();
         chmod(&venv.root.join("venv"), 0o757);
         assert_eq!(venv.picked(), PathBuf::from("python3"));
+    }
+
+    #[test]
+    fn a_sticky_world_writable_venv_or_bin_dir_is_refused() {
+        let venv = Venv::new();
+        chmod(&venv.root.join("venv"), 0o1777);
+        assert_eq!(venv.picked(), PathBuf::from("python3"));
+
+        let venv2 = Venv::new();
+        chmod(venv2.python.parent().unwrap(), 0o1777);
+        assert_eq!(venv2.picked(), PathBuf::from("python3"));
     }
 
     #[test]

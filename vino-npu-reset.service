@@ -10,3 +10,14 @@ Type=oneshot
 # NPU pulled out from under it; the unit fails and says so instead.
 ExecStart=/usr/sbin/modprobe -r intel_vpu
 ExecStart=/usr/sbin/modprobe intel_vpu
+CapabilityBoundingSet=CAP_SYS_MODULE
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=none
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictSUIDSGID=yes
