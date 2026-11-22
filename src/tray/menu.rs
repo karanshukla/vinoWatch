@@ -233,7 +233,7 @@ impl WatchTray {
         if !reset_installed {
             if self.driver.stuck() {
                 items.push(note(
-                    "Reset needs: sudo ./install-npu-reset.sh".into(),
+                    "To enable reset, run: sudo ./install-npu-reset.sh".into(),
                     RowIcon::Named(MenuIcon::Info.name()),
                 ));
             }
@@ -252,7 +252,7 @@ impl WatchTray {
         );
         if !holders.is_empty() {
             items.push(note(
-                "Close these first:".into(),
+                "Close these apps before resetting:".into(),
                 RowIcon::Named(MenuIcon::Warning.name()),
             ));
             items.extend(self.holders().map(|p| note(p.label(), self.proc_icon(p))));
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(
             update_label(&tray, true),
             (
-                "Update failed (couldn't reach GitHub): try again".into(),
+                "Update failed (couldn't reach GitHub). Try again".into(),
                 true
             )
         );
@@ -459,7 +459,7 @@ mod tests {
             texts(tray.driver_items(false)),
             [
                 "Check NPU driver",
-                "Reset needs: sudo ./install-npu-reset.sh"
+                "To enable reset, run: sudo ./install-npu-reset.sh"
             ]
         );
         let enabled = |tray: &WatchTray| {
@@ -478,7 +478,7 @@ mod tests {
         });
         assert_eq!(enabled(&tray), Some(false));
         let items = texts(tray.driver_items(true));
-        assert_eq!(items[2], "Close these first:");
+        assert_eq!(items[2], "Close these apps before resetting:");
         assert!(items[3].starts_with("vino__speak pid 7"), "{}", items[3]);
         tray.driver = Driver::Resetting;
         assert_eq!(enabled(&tray), Some(false));
@@ -549,7 +549,7 @@ mod tests {
                 speak,
                 "Check NPU driver",
                 "Reset NPU driver",
-                "Close these first:",
+                "Close these apps before resetting:",
                 speak,
                 version.as_str(),
                 "Check for updates",

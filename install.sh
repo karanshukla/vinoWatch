@@ -189,7 +189,7 @@ launcher_entry() {
 Type=Application
 Name=vinoWatch
 GenericName=OpenVINO Monitor
-Comment=CPU, RAM and NPU use of OpenVINO apps, in the system tray
+Comment=Monitor CPU, RAM, and NPU usage of OpenVINO apps in the system tray
 Exec=$1
 Icon=vinowatch
 Terminal=false
@@ -216,7 +216,7 @@ start_with_the_session() {
 [Desktop Entry]
 Type=Application
 Name=vinoWatch
-Comment=CPU, RAM and NPU use of OpenVINO apps, in the system tray
+Comment=Monitor CPU, RAM, and NPU usage of OpenVINO apps in the system tray
 Exec=systemctl --user start vinowatch.service
 Icon=vinowatch
 NoDisplay=true

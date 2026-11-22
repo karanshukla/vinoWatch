@@ -10,11 +10,11 @@ Release binaries are statically linked with musl, so the `curl | sh` installer w
 | A systemd user session | Autostarting the tray service |
 | Rust toolchain at `rust-version` (`1.95`) or newer (via `rustup` or distro `cargo`) | Building from a Git checkout |
 
-Everything `install.sh` creates lives inside your home directory and leaves `/usr` untouched. The optional `install-npu-reset.sh` script writes only to `/etc/systemd/system` and `/etc/polkit-1/rules.d`, and invokes `/usr/sbin/modprobe` (present at that path on Fedora, Debian/Ubuntu, Arch, and openSUSE).
+All files created by `install.sh` are placed inside your home directory, without modifying `/usr`. The optional `install-npu-reset.sh` script writes only to `/etc/systemd/system` and `/etc/polkit-1/rules.d`, and invokes `/usr/sbin/modprobe` (present at that path on Fedora, Debian/Ubuntu, Arch, and openSUSE).
 
 ## Immutable distros
 
-On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the standard `curl | sh` install—no `rpm-ostree` or `transactional-update` package layering is needed. `sudo ~/.local/share/vinowatch/install-npu-reset.sh` also works because `/etc` is writable on all of them.
+On Fedora Atomic (Silverblue, Kinoite, Bazzite) and openSUSE Aeon, use the standard `curl | sh` install; no `rpm-ostree` or `transactional-update` package layering is needed. `sudo ~/.local/share/vinowatch/install-npu-reset.sh` also works because `/etc` is writable on all of them.
 
 To build from source on an immutable system, compile inside a `toolbox` (or `distrobox`) container and run `./install.sh` on the host so `systemctl --user` can reach your session:
 

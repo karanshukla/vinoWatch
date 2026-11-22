@@ -10,7 +10,7 @@
 
 The third rule ensures helper processes that do not load OpenVINO directly (such as `vinoWhisper`'s tray, settings window, and idle dictation process, or `vinoAuthFace`'s tray) still count toward their app's RAM usage. These processes are labeled `helper` (`"openvino": false` in `--json`), contribute to the RAM total, and do not turn the tray icon green or count as OpenVINO processes in the tooltip.
 
-Matching checks only the executable's filename—or, for Python processes, the script filename or `-m` module name. Directory paths, arguments, and working directories are ignored so tools like `pytest` or editors running inside a `vino*` repository are not misclassified.
+Matching checks only the executable's filename (or, for Python processes, the script filename or `-m` module name). Directory paths, arguments, and working directories are ignored so tools like `pytest` or editors running inside a `vino*` repository are not misclassified.
 
 Apps are distinguished by command line because Python-based apps all appear as `python3`. `vinoPop` is identified by its checkout path in either the command line or working directory.
 

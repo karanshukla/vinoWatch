@@ -48,10 +48,10 @@ impl Update {
         match self {
             Update::Unchecked => "Check for updates".into(),
             Update::Checking => "Checking for updates…".into(),
-            Update::UpToDate => "Up to date: check again".into(),
+            Update::UpToDate => "Up to date (check again)".into(),
             Update::Available(tag) => format!("Update to {tag}"),
             Update::Installing(tag) => format!("Installing {tag}…"),
-            Update::Failed(why) => format!("Update failed ({}): try again", clip(why)),
+            Update::Failed(why) => format!("Update failed ({}). Try again", clip(why)),
         }
     }
 }
@@ -107,8 +107,8 @@ impl Driver {
     pub(super) fn label(&self) -> Option<String> {
         Some(match self {
             Driver::Unchecked => return None,
-            Driver::Checking => "Checking the NPU driver…".into(),
-            Driver::Resetting => "Reloading the NPU driver…".into(),
+            Driver::Checking => "Checking NPU driver…".into(),
+            Driver::Resetting => "Reloading NPU driver…".into(),
             Driver::Checked {
                 verdict: Verdict::Healthy,
                 after_reset,
@@ -122,9 +122,9 @@ impl Driver {
                 verdict: Verdict::Stuck,
                 after_reset,
             } => if *after_reset {
-                "NPU driver still stuck after a reload: reboot"
+                "NPU driver is still stuck after reload. Reboot required."
             } else {
-                "NPU driver stuck: close the apps holding the NPU, then reset it"
+                "NPU driver stuck. Close apps using the NPU, then reset it."
             }
             .into(),
             Driver::Checked {
