@@ -28,7 +28,7 @@ If `vinoWatch` launches before your panel is ready, it waits for a tray host to 
 
 ## App launcher
 
-`install.sh` installs an application launcher entry at `~/.local/share/applications/vinowatch.desktop`. Launching `vinoWatch` from your app menu restarts the tray service—starting it if it was stopped, or bringing an idle-hidden icon back into view for five minutes.
+`install.sh` installs an application launcher entry at `~/.local/share/applications/vinowatch.desktop`. Launching `vinoWatch` from your app menu restarts the tray service, starting it if it was stopped or making an idle-hidden icon visible again for five minutes.
 
 ## sway and Hyprland
 

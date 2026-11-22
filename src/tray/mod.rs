@@ -32,7 +32,7 @@ const NPU_BUSY_PERCENT: f64 = 1.0;
 /// vino trays do after their idle minutes.
 const HIDE_AFTER: Duration = Duration::from_secs(5 * 60);
 
-const TRAY_GONE: &str = "the tray icon went away";
+const TRAY_GONE: &str = "the tray icon disconnected";
 
 const CHECK_DRIVER: Job = Job::Driver(DriverJob::Check);
 const RESET_DRIVER: Job = Job::Driver(DriverJob::Reset);
@@ -211,17 +211,17 @@ impl ksni::Tray for WatchTray {
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
         let why = match reason {
             ksni::OfflineReason::Error(e) => e.to_string(),
-            _ => "the tray host went away".into(),
+            _ => "tray host disconnected".into(),
         };
         eprintln!(
-            "vinowatch: no tray host ({why}); the icon shows once one starts \
-             (GNOME needs the AppIndicator extension)"
+            "vinowatch: no tray host available ({why}); waiting for one to start \
+             (GNOME requires the AppIndicator extension)"
         );
         true
     }
 
     fn watcher_online(&self) {
-        eprintln!("vinowatch: a tray host started; the icon is back");
+        eprintln!("vinowatch: tray host connected; icon restored");
     }
 
     fn attention_icon_name(&self) -> String {

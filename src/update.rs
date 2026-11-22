@@ -69,7 +69,7 @@ fn fetch_command(url: &str) -> [&str; 9] {
 
 /// What GitHub's `releases/latest` answer means for a tray at `current`.
 fn found_in(current: &str, release_json: &str) -> Result<Found, String> {
-    let latest = latest_tag(release_json).ok_or("GitHub sent no release")?;
+    let latest = latest_tag(release_json).ok_or("no release found on GitHub")?;
     Ok(if is_newer(current, &latest) {
         Found::Newer(latest)
     } else {
@@ -142,7 +142,7 @@ mod tests {
         for answer in ["", "{}", r#"{"message":"Not Found"}"#] {
             assert_eq!(
                 found_in("0.6.0", answer),
-                Err("GitHub sent no release".into()),
+                Err("no release found on GitHub".into()),
                 "{answer:?}"
             );
         }

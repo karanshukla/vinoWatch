@@ -1,6 +1,6 @@
 # Contributing
 
-`vinoWatch` was developed on a machine without an Intel NPU, so real-world NPU hardware reports are especially helpful. If you have an Intel NPU, please let us know whether the `NPU` percentage updates while running `vinoWhisper` or `vinoSpeak` on the NPU and whether the `NPU open` marker appears on the expected process—ideally with the output of `vinowatch --json --once` captured while the app is active.
+`vinoWatch` was developed on a machine without an Intel NPU, so real-world NPU hardware reports are especially helpful. If you have an Intel NPU, please let us know whether the `NPU` percentage updates while running `vinoWhisper` or `vinoSpeak` on the NPU and whether the `NPU open` marker appears on the expected process, ideally with the output of `vinowatch --json --once` captured while the app is active.
 
 ## Development setup
 

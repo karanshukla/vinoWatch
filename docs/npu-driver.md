@@ -35,8 +35,8 @@ sudo ~/.local/share/vinowatch/install-npu-reset.sh --uninstall
 
 `install.sh` places `install-npu-reset.sh`, the service unit, and the polkit rule in `~/.local/share/vinowatch` from the same verified release (or Git checkout). Running `sudo ./install-npu-reset.sh` directly from a checkout or unpacked release does the same thing.
 
-The script installs `vino-npu-reset.service` and a polkit rule allowing the active local user to start that specific unit—and no other—without entering a password.
+The script installs `vino-npu-reset.service` and a polkit rule allowing the active local user to start only that specific unit without entering a password.
 
-Because `modprobe -r` refuses to unload `intel_vpu` while any process has `/dev/accel` open, the menu item lists all visible apps currently holding the NPU and remains disabled until you close them. `vinoWatch` never stops processes automatically. If another user's process holds `/dev/accel` open, `vinoWatch` cannot inspect it and the reset reports the failure.
+Because `modprobe -r` cannot unload `intel_vpu` while any process has `/dev/accel` open, the menu item lists all visible apps currently using the NPU and stays disabled until you close them. `vinoWatch` never stops processes automatically. If another user's process holds `/dev/accel` open, `vinoWatch` cannot inspect it and the reset reports the failure.
 
 *Note: Neither the probe nor the reset has been run against a live stuck NPU driver yet; the polkit rule and module reload workflow were verified on a machine without an NPU.*

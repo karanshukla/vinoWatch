@@ -56,7 +56,7 @@ async fn run_update_job(job: UpdateJob, handle: &ksni::Handle<WatchTray>) -> Upd
                 .await
                 .flatten();
             let (Some(tag), Some(upgrade)) = (tag, update::upgrade_command()) else {
-                return Update::Failed("no vinowatch-upgrade".into());
+                return Update::Failed("vinowatch-upgrade not found".into());
             };
             let failed_tag = tag.clone();
             // Success restarts the tray and ends this process; returning means it didn't.
