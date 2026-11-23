@@ -5,6 +5,15 @@ All notable changes to vinoWatch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-23
+
+### Changed
+
+- The tray and app icon are redrawn as a gauge dial: a dark disc with an arc open at the bottom and a hub dot, inside the same rounded vino tile. The symbolic tray icons are an arc and hub in the shared outline frame.
+- The driver check is stricter about which Python interpreter it trusts, and the NPU reset service unit is hardened.
+- Wording in the tray menu, notifications, install.sh and the documentation is simplified.
+- Built on vino-ui 0.5.2.
+
 ## [0.7.0] - 2026-11-17
 
 ### Changed
