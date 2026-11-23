@@ -36,7 +36,7 @@ Each process's `/proc/<pid>/maps` is read once and re-read only when its virtual
 
 Hovering over the tray icon displays the NPU load, OpenVINO process count, and total RAM held by OpenVINO apps relative to available memory. Clicking the icon opens a menu with one row per process.
 
-The tray icon displays three vertical meters styled after the other `vino*` apps:
+The tray icon is a round dial: a dark disc with a gauge arc open at the bottom and a hub in the middle. It is deliberately not the rounded tile the other `vino*` apps use. The colour carries the state:
 
 | Icon state | Condition |
 |---|---|

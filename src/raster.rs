@@ -13,17 +13,6 @@ pub struct Rect {
     pub y1: f32,
 }
 
-impl Rect {
-    pub fn inset(self, by: f32) -> Rect {
-        Rect {
-            x0: self.x0 + by,
-            y0: self.y0 + by,
-            x1: self.x1 - by,
-            y1: self.y1 - by,
-        }
-    }
-}
-
 pub struct Canvas<'a> {
     pixels: &'a mut [u8],
     width: u32,
@@ -68,15 +57,7 @@ impl<'a> Canvas<'a> {
         self.cover(rect, color, |x, y| rounded_coverage(x, y, rect, radius));
     }
 
-    pub fn stroke_rounded(&mut self, rect: Rect, radius: f32, width: f32, color: Rgba) {
-        let inner = rect.inset(width);
-        let inner_radius = (radius - width).max(0.0);
-        self.cover(rect, color, |x, y| {
-            rounded_coverage(x, y, rect, radius) - rounded_coverage(x, y, inner, inner_radius)
-        });
-    }
-
-    fn cover(&mut self, rect: Rect, color: Rgba, coverage: impl Fn(f32, f32) -> f32) {
+    pub fn cover(&mut self, rect: Rect, color: Rgba, coverage: impl Fn(f32, f32) -> f32) {
         let (x0, y0) = (rect.x0.floor() as i32, rect.y0.floor() as i32);
         let (x1, y1) = (rect.x1.ceil() as i32, rect.y1.ceil() as i32);
         for y in y0.max(0)..y1.min(self.height as i32) {
@@ -122,6 +103,38 @@ impl<'a> Canvas<'a> {
             )
         })
     }
+}
+
+/// A filled circle of `radius` around (`c`, `c`), anti-aliased at its edge.
+pub fn disc_coverage(px: f32, py: f32, c: f32, radius: f32) -> f32 {
+    let distance = ((px - c).powi(2) + (py - c).powi(2)).sqrt();
+    (0.5 - (distance - radius)).clamp(0.0, 1.0)
+}
+
+/// A stroke of `width` along the circle of `radius` around (`c`, `c`), from
+/// `start` degrees for `sweep` degrees clockwise (angles from east, y down),
+/// with round caps.
+pub fn arc_coverage(
+    px: f32,
+    py: f32,
+    c: f32,
+    radius: f32,
+    width: f32,
+    start: f32,
+    sweep: f32,
+) -> f32 {
+    let (dx, dy) = (px - c, py - c);
+    let angle = (dy.atan2(dx).to_degrees() - start).rem_euclid(360.0);
+    let distance = if angle <= sweep {
+        ((dx * dx + dy * dy).sqrt() - radius).abs()
+    } else {
+        let end = |degrees: f32| {
+            let r = degrees.to_radians();
+            (dx - radius * r.cos()).hypot(dy - radius * r.sin())
+        };
+        end(start).min(end(start + sweep))
+    };
+    (0.5 - (distance - width / 2.0)).clamp(0.0, 1.0)
 }
 
 pub fn rounded_coverage(px: f32, py: f32, rect: Rect, radius: f32) -> f32 {
@@ -174,6 +187,33 @@ mod tests {
     #[test]
     fn an_edge_straddling_pixel_is_half_covered() {
         assert!((rounded_coverage(10.0, 5.0, SQUARE, 0.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_disc_covers_its_inside_only() {
+        assert_eq!(disc_coverage(5.0, 5.0, 5.0, 3.0), 1.0);
+        assert_eq!(disc_coverage(9.0, 5.0, 5.0, 3.0), 0.0);
+    }
+
+    #[test]
+    fn an_arc_covers_its_sweep_and_its_round_caps_not_the_gap() {
+        // 90 degrees from east: the lower right quarter, radius 10 around (10, 10).
+        let at = |degrees: f32| {
+            let r = degrees.to_radians();
+            arc_coverage(
+                10.0 + 10.0 * r.cos(),
+                10.0 + 10.0 * r.sin(),
+                10.0,
+                10.0,
+                4.0,
+                0.0,
+                90.0,
+            )
+        };
+        assert_eq!(at(45.0), 1.0);
+        assert_eq!(at(-2.0), 1.0, "the cap runs past the start");
+        assert_eq!(at(180.0), 0.0);
+        assert_eq!(arc_coverage(10.0, 10.0, 10.0, 10.0, 4.0, 0.0, 90.0), 0.0);
     }
 
     #[test]

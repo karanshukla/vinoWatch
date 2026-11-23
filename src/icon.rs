@@ -1,12 +1,15 @@
-//! The tray and app icon, in vinoWhisper's style: a dark rounded tile with a
-//! faint edge and pill-shaped marks. Here the marks are three meters (CPU, RAM,
-//! NPU). Drawn in code so the tray needs no image decoder, and the checked-in
-//! SVGs in `data/` are generated from the same shapes.
+//! The tray and app icon: a round dial. A dark disc with a gauge arc open at the
+//! bottom, its level and a hub in the state's colour. Deliberately not the
+//! rounded tile with pill marks the other vino apps use, so vinoWatch is not
+//! mistaken for vinoWhisper in a panel. Drawn in code so the tray needs no image
+//! decoder, and the checked-in SVGs in `data/` are generated from the same
+//! numbers. Menu rows keep meter bars (they carry the numbers), on the same disc.
 
+use std::f32::consts::PI;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::raster::{Canvas, Rect, Rgba};
+use crate::raster::{Canvas, Rect, Rgba, arc_coverage, disc_coverage};
 
 #[derive(Debug, Clone, Copy)]
 struct Shape {
@@ -22,16 +25,6 @@ impl Shape {
         Shape { x, y, w, h, r }
     }
 
-    fn inset(self, by: f32) -> Shape {
-        Shape::new(
-            self.x + by,
-            self.y + by,
-            self.w - by * 2.0,
-            self.h - by * 2.0,
-            self.r - by,
-        )
-    }
-
     fn rect(self, unit: f32) -> Rect {
         Rect {
             x0: self.x * unit,
@@ -39,16 +32,6 @@ impl Shape {
             x1: (self.x + self.w) * unit,
             y1: (self.y + self.h) * unit,
         }
-    }
-
-    fn svg_path(self) -> String {
-        let Shape { x, y, w, h, .. } = self;
-        format!("M{x} {y}h{w}v{h}h-{w}z")
-    }
-
-    fn svg_rect(self, paint: &str) -> String {
-        let Shape { x, y, w, h, r } = self;
-        format!(r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" {paint}/>"#)
     }
 }
 
@@ -65,19 +48,18 @@ pub enum State {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Part {
-    /// The empty length of a meter.
+    /// The empty length of a meter or the dial's arc.
     Track,
     /// The filled length.
     Level,
 }
 
-/// vinoWhisper's palette (gui/src/paint.rs), as in vinoAuthFace; its contrast
-/// is pinned by `tests::the_pixmap_meters_stand_out_on_any_panel`,
+/// Its contrast is pinned by `tests::the_pixmap_dial_stands_out_on_any_panel`,
 /// `tests::the_symbolic_icons_show_on_light_and_dark_panels`.
-const TILE: Rgba = Rgba(14, 14, 16, 255);
+const TILE: Rgba = Rgba(6, 10, 20, 255);
 const EDGE: Rgba = Rgba(255, 255, 255, 46);
 const WHITE: Rgba = Rgba(250, 250, 250, 255);
-const TRACK: Rgba = Rgba(160, 164, 172, 140);
+const TRACK: Rgba = Rgba(165, 175, 200, 132);
 const GREEN: Rgba = Rgba(86, 204, 120, 255);
 const AMBER: Rgba = Rgba(245, 184, 66, 255);
 
@@ -93,64 +75,75 @@ fn paint(state: State, part: Part) -> Rgba {
     }
 }
 
-struct Grid {
-    tile: Shape,
-    edge: f32,
-    /// Each meter's track, then its level drawn over the start of it.
-    marks: &'static [(Shape, Part)],
+/// A dial's geometry on a grid of `size` units. Angles run clockwise from
+/// east, in degrees, as SVG's y axis does.
+#[derive(Debug, Clone, Copy)]
+struct Dial {
     size: f32,
+    /// The disc behind the gauge; 0 for the symbolic icons, which have none.
+    disc: f32,
+    edge: f32,
+    arc_radius: f32,
+    arc_width: f32,
+    hub: f32,
 }
 
-/// 64-unit design, for the app icon and the larger tray sizes.
-const LARGE: Grid = Grid {
-    tile: Shape::new(4.0, 4.0, 56.0, 56.0, 12.0),
-    edge: 2.0,
-    marks: &[
-        (Shape::new(14.0, 18.0, 36.0, 6.0, 3.0), Part::Track),
-        (Shape::new(14.0, 18.0, 22.0, 6.0, 3.0), Part::Level),
-        (Shape::new(14.0, 29.0, 36.0, 6.0, 3.0), Part::Track),
-        (Shape::new(14.0, 29.0, 30.0, 6.0, 3.0), Part::Level),
-        (Shape::new(14.0, 40.0, 36.0, 6.0, 3.0), Part::Track),
-        (Shape::new(14.0, 40.0, 14.0, 6.0, 3.0), Part::Level),
-    ],
+impl Dial {
+    fn centre(self) -> f32 {
+        self.size / 2.0
+    }
+
+    /// The point on the arc's centreline at `degrees`.
+    fn on_arc(self, degrees: f32) -> (f32, f32) {
+        let radians = degrees * PI / 180.0;
+        (
+            self.centre() + self.arc_radius * radians.cos(),
+            self.centre() + self.arc_radius * radians.sin(),
+        )
+    }
+
+    /// An SVG arc along the centreline from `from` for `sweep` degrees.
+    fn svg_arc(self, from: f32, sweep: f32) -> String {
+        let (x0, y0) = self.on_arc(from);
+        let (x1, y1) = self.on_arc(from + sweep);
+        let (r, large) = (self.arc_radius, u8::from(sweep > 180.0));
+        format!("M{x0:.2} {y0:.2}A{r} {r} 0 {large} 1 {x1:.2} {y1:.2}")
+    }
+}
+
+/// 64-unit design, drawn at every tray size and as the app icon.
+const DIAL: Dial = Dial {
     size: 64.0,
+    disc: 28.0,
+    edge: 2.0,
+    arc_radius: 17.0,
+    arc_width: 7.0,
+    hub: 4.0,
 };
 
-/// 16-unit design on whole pixels, so the 16 px tray icon stays sharp.
-const SMALL: Grid = Grid {
-    tile: Shape::new(1.0, 1.0, 14.0, 14.0, 3.0),
-    edge: 1.0,
-    marks: &[
-        (Shape::new(3.0, 4.0, 10.0, 2.0, 0.0), Part::Track),
-        (Shape::new(3.0, 4.0, 6.0, 2.0, 0.0), Part::Level),
-        (Shape::new(3.0, 7.0, 10.0, 2.0, 0.0), Part::Track),
-        (Shape::new(3.0, 7.0, 8.0, 2.0, 0.0), Part::Level),
-        (Shape::new(3.0, 10.0, 10.0, 2.0, 0.0), Part::Track),
-        (Shape::new(3.0, 10.0, 4.0, 2.0, 0.0), Part::Level),
-    ],
+/// 16-unit design for the symbolic tray icon: no disc, so the panel shows
+/// through and the theme can recolour it.
+const SYMBOLIC: Dial = Dial {
     size: 16.0,
-};
-
-/// The symbolic icon's outline: vinoWhisper's and vinoPop's tray frame, path
-/// for path, so the vino icons sit together in the panel.
-const FRAME: &str = "M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z\
-                     M3 3h10a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1z";
-
-/// 16-unit design for the symbolic tray icon: inside `FRAME`, three 1-unit
-/// meters in vinoWhisper's line style, each level a gap away from its track.
-const SYMBOLIC: Grid = Grid {
-    tile: Shape::new(0.0, 0.0, 16.0, 16.0, 0.0),
+    disc: 0.0,
     edge: 0.0,
-    marks: &[
-        (Shape::new(4.0, 5.0, 4.0, 1.0, 0.0), Part::Level),
-        (Shape::new(9.0, 5.0, 3.0, 1.0, 0.0), Part::Track),
-        (Shape::new(4.0, 8.0, 6.0, 1.0, 0.0), Part::Level),
-        (Shape::new(11.0, 8.0, 1.0, 1.0, 0.0), Part::Track),
-        (Shape::new(4.0, 11.0, 2.0, 1.0, 0.0), Part::Level),
-        (Shape::new(7.0, 11.0, 5.0, 1.0, 0.0), Part::Track),
-    ],
-    size: 16.0,
+    arc_radius: 5.5,
+    arc_width: 1.5,
+    hub: 1.25,
 };
+
+/// The gauge opens at the bottom: it starts at the lower left and sweeps
+/// clockwise over the top to the lower right.
+const ARC_START: f32 = 135.0;
+const ARC_SWEEP: f32 = 270.0;
+
+/// How far round the level is drawn. The tray icon is a still image, so the
+/// state is its colour; this only gives the arc a filled part.
+const LEVEL: f32 = 0.65;
+
+/// Degrees left clear between the symbolic icon's level and its track, so the
+/// two round caps don't overlap (they are drawn at half opacity).
+const SYMBOLIC_GAP: f32 = 28.0;
 
 fn hex(Rgba(r, g, b, _): Rgba) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
@@ -160,25 +153,27 @@ fn opacity(Rgba(_, _, _, a): Rgba) -> String {
     format!("{:.2}", f32::from(a) / 255.0)
 }
 
-/// SVG strokes straddle the path: inset by half the width to match `stroke_rounded`.
-fn stroke_centreline(shape: Shape, width: f32) -> Shape {
-    shape.inset(width / 2.0)
-}
-
-/// A `fill` attribute, with `fill-opacity` only where the colour needs it.
-fn svg_fill(color: Rgba) -> String {
+/// A paint attribute pair (`fill` or `stroke`), with an opacity only where the
+/// colour needs it.
+fn svg_paint(attr: &str, color: Rgba) -> String {
     if color.3 == u8::MAX {
-        format!(r#"fill="{}""#, hex(color))
+        format!(r#"{attr}="{}""#, hex(color))
     } else {
-        format!(r#"fill="{}" fill-opacity="{}""#, hex(color), opacity(color))
+        format!(
+            r#"{attr}="{}" {attr}-opacity="{}""#,
+            hex(color),
+            opacity(color)
+        )
     }
 }
 
 /// The installed app icon (`vinowatch.svg`): the active state, with the
-/// viewBox cropped to a 2-unit margin. The 64-unit grid's 4-unit margin left
-/// the tile visibly smaller than other apps' icons in a task manager; the tray
-/// pixmaps keep it, since they're drawn at their own size.
+/// viewBox cropped to a 2-unit margin so the disc isn't visibly smaller than
+/// other apps' icons in a task manager; the tray pixmaps keep the 4-unit
+/// margin, since they're drawn at their own size.
 pub fn app_svg() -> String {
+    let d = DIAL;
+    let (c, edge) = (d.centre(), d.edge);
     let mut svg =
         String::from("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"2 2 60 60\">\n");
     let mut line = |element: String| {
@@ -186,16 +181,34 @@ pub fn app_svg() -> String {
         svg.push_str(&element);
         svg.push('\n');
     };
-    line(LARGE.tile.svg_rect(&format!(r#"fill="{}""#, hex(TILE))));
-    line(stroke_centreline(LARGE.tile, LARGE.edge).svg_rect(&format!(
-        r#"fill="none" stroke="{}" stroke-opacity="{}" stroke-width="{}""#,
+    line(format!(
+        r#"<circle cx="{c}" cy="{c}" r="{}" fill="{}"/>"#,
+        d.disc,
+        hex(TILE)
+    ));
+    line(format!(
+        r#"<circle cx="{c}" cy="{c}" r="{}" fill="none" stroke="{}" stroke-opacity="{}" stroke-width="{edge}"/>"#,
+        d.disc - edge / 2.0,
         hex(EDGE),
-        opacity(EDGE),
-        LARGE.edge
-    )));
-    for &(shape, part) in LARGE.marks {
-        line(shape.svg_rect(&svg_fill(paint(State::Active, part))));
-    }
+        opacity(EDGE)
+    ));
+    let cap = r#"fill="none" stroke-linecap="round""#;
+    let width = d.arc_width;
+    line(format!(
+        r#"<path d="{}" {cap} stroke-width="{width}" {}/>"#,
+        d.svg_arc(ARC_START, ARC_SWEEP),
+        svg_paint("stroke", paint(State::Active, Part::Track))
+    ));
+    line(format!(
+        r#"<path d="{}" {cap} stroke-width="{width}" {}/>"#,
+        d.svg_arc(ARC_START, ARC_SWEEP * LEVEL),
+        svg_paint("stroke", paint(State::Active, Part::Level))
+    ));
+    line(format!(
+        r#"<circle cx="{c}" cy="{c}" r="{}" {}/>"#,
+        d.hub,
+        svg_paint("fill", paint(State::Active, Part::Level))
+    ));
     svg.push_str("</svg>\n");
     svg
 }
@@ -216,49 +229,42 @@ impl State {
 }
 
 /// A monochrome tray icon for one state, in the KDE symbolic format: the
-/// `ColorScheme-Text` class is what Plasma recolours. The tracks and an idle
-/// level follow the theme; the green and amber levels stay fixed. The tracks
-/// are at 0.6, not 0.5: half of Breeze Light's text colour falls just short
-/// of 3:1 on its panel.
+/// `ColorScheme-Text` class is what Plasma recolours. The track and an idle
+/// level follow the theme; the green and amber levels stay fixed. The track is
+/// at 0.6, not 0.5: half of Breeze Light's text colour falls just short of 3:1
+/// on its panel.
 pub fn symbolic_svg(state: State) -> String {
-    let (mut text, mut dim, mut accent) = (String::new(), String::new(), String::new());
-    for &(shape, part) in SYMBOLIC.marks {
-        let bucket = match (state, part) {
-            (_, Part::Track) => &mut dim,
-            (State::Idle, Part::Level) => &mut text,
-            (State::Active | State::Warning, Part::Level) => &mut accent,
-        };
-        bucket.push_str(&shape.svg_path());
-    }
-    let accent_fill = hex(if state == State::Warning {
+    let d = SYMBOLIC;
+    let level_sweep = ARC_SWEEP * LEVEL - SYMBOLIC_GAP / 2.0;
+    let track_from = ARC_START + ARC_SWEEP * LEVEL + SYMBOLIC_GAP / 2.0;
+    let track_sweep = ARC_START + ARC_SWEEP - track_from;
+    let accent = hex(if state == State::Warning {
         PANEL_AMBER
     } else {
         PANEL_GREEN
     });
-    let mut svg = format!(
+    let themed = state == State::Idle;
+    let (class, level_colour) = if themed {
+        (r#" class="ColorScheme-Text""#, "currentColor".to_string())
+    } else {
+        ("", accent)
+    };
+    let stroke = format!(
+        "fill:none;stroke-width:{};stroke-linecap:round",
+        d.arc_width
+    );
+    let c = d.centre();
+    format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\n  \
          <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text {{ color: #232629; }}</style>\n  \
-         <path class=\"ColorScheme-Text\" style=\"fill:currentColor\" fill-rule=\"evenodd\" d=\"{FRAME}\"/>\n",
-    );
-    const THEMED: &str = r#" class="ColorScheme-Text""#;
-    const FIXED: &str = "";
-    for (path, class, style) in [
-        (text, THEMED, "fill:currentColor".to_string()),
-        (
-            dim,
-            THEMED,
-            "fill:currentColor;fill-opacity:0.6".to_string(),
-        ),
-        (accent, FIXED, format!("fill:{accent_fill}")),
-    ] {
-        if !path.is_empty() {
-            svg.push_str(&format!(
-                "  <path{class} style=\"{style}\" d=\"{path}\"/>\n"
-            ));
-        }
-    }
-    svg.push_str("</svg>\n");
-    svg
+         <path class=\"ColorScheme-Text\" style=\"{stroke};stroke:currentColor;stroke-opacity:0.6\" d=\"{track}\"/>\n  \
+         <path{class} style=\"{stroke};stroke:{level_colour}\" d=\"{level}\"/>\n  \
+         <circle{class} style=\"fill:{level_colour}\" cx=\"{c}\" cy=\"{c}\" r=\"{hub}\"/>\n\
+         </svg>\n",
+        track = d.svg_arc(track_from, track_sweep),
+        level = d.svg_arc(ARC_START, level_sweep),
+        hub = d.hub,
+    )
 }
 
 /// Every icon file, as its path under a hicolor theme directory and its SVG.
@@ -293,18 +299,6 @@ pub fn install(data: &Path) -> io::Result<Vec<PathBuf>> {
 /// Every size a tray might ask for.
 const TRAY_SIZES: [u32; 6] = [16, 22, 24, 32, 48, 64];
 
-/// From this size up the 64-unit design is drawn; below it the 16-unit one,
-/// whose lines land on whole pixels.
-const LARGE_GRID_FROM: u32 = 32;
-
-fn grid_for(size: u32) -> &'static Grid {
-    if size < LARGE_GRID_FROM {
-        &SMALL
-    } else {
-        &LARGE
-    }
-}
-
 pub fn tray_icons(state: State) -> Vec<ksni::Icon> {
     TRAY_SIZES
         .into_iter()
@@ -315,8 +309,7 @@ pub fn tray_icons(state: State) -> Vec<ksni::Icon> {
 fn tray_icon(state: State, size: u32) -> ksni::Icon {
     let mut pixels = vec![0u8; (size * size * 4) as usize];
     let mut canvas = Canvas::new(&mut pixels, size, size);
-    let grid = grid_for(size);
-    draw(&mut canvas, grid, state, size as f32);
+    draw_dial(&mut canvas, state, size as f32 / DIAL.size);
     ksni::Icon {
         width: size as i32,
         height: size as i32,
@@ -324,23 +317,58 @@ fn tray_icon(state: State, size: u32) -> ksni::Icon {
     }
 }
 
-fn draw(canvas: &mut Canvas, grid: &Grid, state: State, size: f32) {
-    let unit = size / grid.size;
-    draw_tile(canvas, grid, unit);
-    for &(shape, part) in grid.marks {
-        canvas.fill_rounded(shape.rect(unit), shape.r * unit, paint(state, part));
+fn draw_dial(canvas: &mut Canvas, state: State, unit: f32) {
+    let d = DIAL;
+    draw_tile(canvas, unit);
+    let (c, radius, width) = (d.centre() * unit, d.arc_radius * unit, d.arc_width * unit);
+    let bounds = Rect {
+        x0: c - radius - width,
+        y0: c - radius - width,
+        x1: c + radius + width,
+        y1: c + radius + width,
+    };
+    for (sweep, part) in [(ARC_SWEEP, Part::Track), (ARC_SWEEP * LEVEL, Part::Level)] {
+        canvas.cover(bounds, paint(state, part), |x, y| {
+            arc_coverage(x, y, c, radius, width, ARC_START, sweep)
+        });
     }
+    let hub = Rect {
+        x0: c - d.hub * unit - 1.0,
+        y0: c - d.hub * unit - 1.0,
+        x1: c + d.hub * unit + 1.0,
+        y1: c + d.hub * unit + 1.0,
+    };
+    canvas.cover(hub, paint(state, Part::Level), |x, y| {
+        disc_coverage(x, y, c, d.hub * unit)
+    });
 }
 
-fn draw_tile(canvas: &mut Canvas, grid: &Grid, unit: f32) {
-    let tile = grid.tile.rect(unit);
-    canvas.fill_rounded(tile, grid.tile.r * unit, TILE);
-    canvas.stroke_rounded(tile, grid.tile.r * unit, grid.edge * unit, EDGE);
+/// The dark disc and its faint edge, also behind each menu row's meters.
+fn draw_tile(canvas: &mut Canvas, unit: f32) {
+    let d = DIAL;
+    let (c, radius, edge) = (d.centre() * unit, d.disc * unit, d.edge * unit);
+    let bounds = Rect {
+        x0: c - radius,
+        y0: c - radius,
+        x1: c + radius,
+        y1: c + radius,
+    };
+    canvas.cover(bounds, TILE, |x, y| disc_coverage(x, y, c, radius));
+    canvas.cover(bounds, EDGE, |x, y| {
+        disc_coverage(x, y, c, radius) - disc_coverage(x, y, c, radius - edge)
+    });
 }
 
 /// Menu row icons are drawn at this size and scaled down by the host: a 16 px
 /// menu icon is 24 px at 150%, 32 px at 200%.
 const ROW_ICON: u32 = 48;
+
+/// The tracks of a three-meter row icon on the 64-unit grid.
+const ROW_TRACKS: [Shape; 3] = [
+    Shape::new(14.0, 18.0, 36.0, 6.0, 3.0),
+    Shape::new(14.0, 29.0, 36.0, 6.0, 3.0),
+    Shape::new(14.0, 40.0, 36.0, 6.0, 3.0),
+];
 
 /// The one meter of a single-level row icon: the three meters' span, twice as
 /// thick.
@@ -352,12 +380,7 @@ fn meters(levels: &[f32]) -> Vec<(Shape, Option<Shape>)> {
     let tracks: Vec<Shape> = if levels.len() == 1 {
         vec![WIDE_METER]
     } else {
-        LARGE
-            .marks
-            .iter()
-            .filter(|(_, part)| *part == Part::Track)
-            .map(|(shape, _)| *shape)
-            .collect()
+        ROW_TRACKS.to_vec()
     };
     tracks
         .into_iter()
@@ -391,8 +414,8 @@ pub fn meter_png(state: State, levels: &[f32]) -> Vec<u8> {
 fn meter_rgba(state: State, levels: &[f32]) -> Vec<u8> {
     let mut pixels = vec![0u8; (ROW_ICON * ROW_ICON * 4) as usize];
     let mut canvas = Canvas::new(&mut pixels, ROW_ICON, ROW_ICON);
-    let unit = ROW_ICON as f32 / LARGE.size;
-    draw_tile(&mut canvas, &LARGE, unit);
+    let unit = ROW_ICON as f32 / DIAL.size;
+    draw_tile(&mut canvas, unit);
     for (track, level) in meters(levels) {
         canvas.fill_rounded(track.rect(unit), track.r * unit, TRACK);
         if let Some(level) = level {
@@ -462,7 +485,7 @@ mod tests {
 
     #[test]
     fn the_wide_meter_is_centred_in_the_three() {
-        let (top, bottom) = (LARGE.marks[0].0.y, LARGE.marks[5].0.y + LARGE.marks[5].0.h);
+        let (top, bottom) = (ROW_TRACKS[0].y, ROW_TRACKS[2].y + ROW_TRACKS[2].h);
         assert_eq!(WIDE_METER.y + WIDE_METER.h / 2.0, (top + bottom) / 2.0);
         assert_eq!(WIDE_METER.r * 2.0, WIDE_METER.h);
     }
@@ -479,80 +502,30 @@ mod tests {
     }
 
     #[test]
-    fn the_marks_sit_inside_the_tile() {
-        for grid in [&LARGE, &SMALL, &SYMBOLIC] {
-            let inner = grid.tile.inset(grid.edge);
-            for (m, _) in grid.marks {
-                assert!(
-                    m.x > inner.x
-                        && m.y > inner.y
-                        && m.x + m.w < inner.x + inner.w
-                        && m.y + m.h < inner.y + inner.h,
-                    "{m:?} reaches the edge"
-                );
-                assert!(m.r * 2.0 <= m.w.min(m.h), "{m:?} is rounded past a pill");
-            }
-        }
-    }
-
-    /// The inside of `FRAME`.
-    const FRAME_INNER: Shape = Shape::new(2.0, 3.0, 12.0, 10.0, 1.0);
-
-    #[test]
-    fn the_symbolic_meters_sit_inside_the_frame() {
-        let inner = FRAME_INNER.inset(1.0);
-        for (m, _) in SYMBOLIC.marks {
-            assert!(
-                m.x >= inner.x
-                    && m.y >= inner.y
-                    && m.x + m.w <= inner.x + inner.w
-                    && m.y + m.h <= inner.y + inner.h,
-                "{m:?} touches the frame"
-            );
-        }
-        assert!(FRAME.contains("M3 2h10a2 2 0 0 1 2 2v8"));
-    }
-
-    #[test]
-    fn the_meters_are_centred_on_the_tile() {
-        for grid in [&LARGE, &SMALL] {
-            let top = grid.marks.iter().map(|(m, _)| m.y).fold(f32::MAX, f32::min);
-            let bottom = grid
-                .marks
-                .iter()
-                .map(|(m, _)| m.y + m.h)
-                .fold(0.0, f32::max);
-            let left = grid.marks.iter().map(|(m, _)| m.x).fold(f32::MAX, f32::min);
-            let right = grid
-                .marks
-                .iter()
-                .map(|(m, _)| m.x + m.w)
-                .fold(0.0, f32::max);
-            let mid = grid.size / 2.0;
-            assert_eq!((top + bottom) / 2.0, mid, "off centre vertically");
-            assert_eq!((left + right) / 2.0, mid, "off centre horizontally");
-        }
-    }
-
-    #[test]
-    fn the_small_icons_land_on_whole_pixels() {
-        let shapes = std::iter::once(SMALL.tile)
-            .chain(SMALL.marks.iter().chain(SYMBOLIC.marks).map(|(s, _)| *s));
-        for s in shapes {
-            for edge in [s.x, s.y, s.w, s.h, SMALL.edge] {
-                assert_eq!(edge.fract(), 0.0, "{s:?} is off the pixel grid");
+    fn the_row_meters_sit_inside_the_disc() {
+        let inner = DIAL.disc - DIAL.edge;
+        for m in ROW_TRACKS.iter().chain([&WIDE_METER]) {
+            assert!(m.r * 2.0 <= m.w.min(m.h), "{m:?} is rounded past a pill");
+            for (x, y) in [
+                (m.x, m.y),
+                (m.x + m.w, m.y),
+                (m.x, m.y + m.h),
+                (m.x + m.w, m.y + m.h),
+            ] {
+                let from_centre = (x - DIAL.centre()).hypot(y - DIAL.centre());
+                assert!(from_centre < inner, "{m:?} reaches the edge");
             }
         }
     }
 
     #[test]
-    fn half_opacity_symbolic_paths_do_not_overlap() {
-        for (i, (a, _)) in SYMBOLIC.marks.iter().enumerate() {
-            for (b, _) in &SYMBOLIC.marks[i + 1..] {
-                let apart =
-                    a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
-                assert!(apart, "{a:?} overlaps {b:?}");
-            }
+    fn the_dial_sits_inside_the_disc_and_the_symbolic_one_inside_its_grid() {
+        const {
+            let reach = DIAL.arc_radius + DIAL.arc_width / 2.0;
+            assert!(reach < DIAL.disc - DIAL.edge, "the arc reaches the edge");
+            assert!(DIAL.hub < DIAL.arc_radius - DIAL.arc_width / 2.0);
+            let reach = SYMBOLIC.arc_radius + SYMBOLIC.arc_width / 2.0;
+            assert!(reach < SYMBOLIC.size / 2.0, "the symbolic arc is clipped");
         }
     }
 
@@ -650,26 +623,36 @@ mod tests {
         }
     }
 
+    /// The dial's pixel at `degrees` round the arc, `size` px wide.
+    fn arc_pixel(icon: &ksni::Icon, degrees: f32) -> Rgba {
+        let size = icon.width as u32;
+        let (x, y) = DIAL.on_arc(degrees);
+        let unit = size as f32 / DIAL.size;
+        let i = (((y * unit) as u32 * size + (x * unit) as u32) * 4) as usize;
+        let [a, r, g, b] = icon.data[i..i + 4] else {
+            unreachable!()
+        };
+        Rgba(r, g, b, a)
+    }
+
     #[test]
-    fn the_pixmap_meters_stand_out_on_any_panel() {
+    fn the_pixmap_dial_stands_out_on_any_panel() {
         for state in State::ALL {
             for icon in tray_icons(state) {
-                let size = icon.width as u32;
-                let grid = grid_for(size);
-                let pixel = |x: u32, y: u32| {
-                    let i = ((y * size + x) * 4) as usize;
-                    let [a, r, g, b] = icon.data[i..i + 4] else {
-                        unreachable!()
-                    };
-                    Rgba(r, g, b, a)
-                };
-                for pair in grid.marks.chunks(2) {
-                    let [(track, Part::Track), (level, Part::Level)] = pair else {
-                        panic!("{pair:?} is not a track then its level")
-                    };
-                    let what = format!("{state:?} {size}px");
-                    check_meter(&what, &pixel, *track, Some(*level), size as f32 / grid.size);
-                }
+                let what = format!("{state:?} {}px", icon.width);
+                let level = arc_pixel(&icon, ARC_START + ARC_SWEEP * LEVEL / 2.0);
+                let empty = arc_pixel(&icon, ARC_START + ARC_SWEEP * (1.0 + LEVEL) / 2.0);
+                let on_tile = contrast(empty, TILE);
+                assert!(
+                    on_tile >= 3.0,
+                    "{what}: track is {on_tile:.2}:1 on the tile"
+                );
+                let on_track = contrast(level, empty);
+                assert!(
+                    on_track >= 3.0,
+                    "{what}: level is {on_track:.2}:1 on its track"
+                );
+                assert_eq!((level.3, empty.3), (255, 255), "{what}: see-through");
             }
         }
         for (panel, _) in PANELS.iter().filter(|(p, _)| luminance(*p) > 0.5) {
@@ -697,7 +680,7 @@ mod tests {
                         continue;
                     }
                     let what = format!("{state:?} {levels:?}");
-                    check_meter(&what, &pixel, track, level, ROW_ICON as f32 / LARGE.size);
+                    check_meter(&what, &pixel, track, level, ROW_ICON as f32 / DIAL.size);
                 }
             }
         }
@@ -715,16 +698,25 @@ mod tests {
                 .map(|s| s.split('"').next().unwrap())
                 .collect();
             assert!(!styles.is_empty(), "{state:?} draws nothing");
+            let value = |style: &str, key: &str| -> Option<String> {
+                let rest = style.split(&format!("{key}:")).nth(1)?;
+                Some(rest.split(';').next().unwrap().to_string())
+            };
             for (panel, text) in PANELS {
                 for style in &styles {
-                    let fill = if style.contains("currentColor") {
-                        let alpha = style
-                            .split("fill-opacity:")
-                            .nth(1)
+                    // Arcs are stroked, the hub is filled.
+                    let key = if style.contains("stroke:") {
+                        "stroke"
+                    } else {
+                        "fill"
+                    };
+                    let colour = value(style, key).unwrap();
+                    let fill = if colour == "currentColor" {
+                        let alpha = value(style, &format!("{key}-opacity"))
                             .map_or(1.0, |a| a.parse().unwrap());
                         over(text, alpha, panel)
                     } else {
-                        let hex = style.strip_prefix("fill:#").unwrap();
+                        let hex = colour.strip_prefix('#').unwrap();
                         let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
                         Rgba(byte(0), byte(2), byte(4), 255)
                     };
