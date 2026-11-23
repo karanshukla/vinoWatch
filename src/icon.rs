@@ -1,7 +1,7 @@
-//! The tray and app icon: a round dial. A dark disc with a gauge arc open at the
-//! bottom, its level and a hub in the state's colour. Deliberately not the
-//! rounded tile with pill marks the other vino apps use, so vinoWatch is not
-//! mistaken for vinoWhisper in a panel. Drawn in code so the tray needs no image
+//! The tray and app icon: a dial in the vino apps' box. A dark rounded tile
+//! (the symbolic icons: the same outline frame) holding a gauge arc open at the
+//! bottom, its level and a hub in the state's colour. The dial, not pill marks,
+//! is what tells vinoWatch from vinoWhisper in a panel. Drawn in code so the tray needs no image
 //! decoder, and the checked-in SVGs in `data/` are generated from the same
 //! numbers. Menu rows keep meter bars (they carry the numbers), on the same disc.
 
@@ -9,7 +9,7 @@ use std::f32::consts::PI;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::raster::{Canvas, Rect, Rgba, arc_coverage, disc_coverage};
+use crate::raster::{Canvas, Rect, Rgba, arc_coverage, disc_coverage, rounded_coverage};
 
 #[derive(Debug, Clone, Copy)]
 struct Shape {
@@ -23,6 +23,17 @@ struct Shape {
 impl Shape {
     const fn new(x: f32, y: f32, w: f32, h: f32, r: f32) -> Shape {
         Shape { x, y, w, h, r }
+    }
+
+    #[cfg(test)]
+    fn inset(self, by: f32) -> Shape {
+        Shape::new(
+            self.x + by,
+            self.y + by,
+            self.w - by * 2.0,
+            self.h - by * 2.0,
+            self.r - by,
+        )
     }
 
     fn rect(self, unit: f32) -> Rect {
@@ -80,8 +91,6 @@ fn paint(state: State, part: Part) -> Rgba {
 #[derive(Debug, Clone, Copy)]
 struct Dial {
     size: f32,
-    /// The disc behind the gauge; 0 for the symbolic icons, which have none.
-    disc: f32,
     edge: f32,
     arc_radius: f32,
     arc_width: f32,
@@ -114,23 +123,33 @@ impl Dial {
 /// 64-unit design, drawn at every tray size and as the app icon.
 const DIAL: Dial = Dial {
     size: 64.0,
-    disc: 28.0,
     edge: 2.0,
     arc_radius: 17.0,
     arc_width: 7.0,
     hub: 4.0,
 };
 
-/// 16-unit design for the symbolic tray icon: no disc, so the panel shows
+/// 16-unit design for the symbolic tray icon, inside `FRAME`; the panel shows
 /// through and the theme can recolour it.
 const SYMBOLIC: Dial = Dial {
     size: 16.0,
-    disc: 0.0,
     edge: 0.0,
-    arc_radius: 5.5,
-    arc_width: 1.5,
-    hub: 1.25,
+    arc_radius: 3.25,
+    arc_width: 1.25,
+    hub: 1.0,
 };
+
+/// The box on the 64-unit grid.
+const TILE_SHAPE: Shape = Shape::new(4.0, 4.0, 56.0, 56.0, 12.0);
+
+/// The symbolic icon's outline: vinoWhisper's and vinoPop's tray frame, path
+/// for path, so the vino icons sit together in the panel.
+const FRAME: &str = "M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z\
+                     M3 3h10a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1z";
+
+/// The inside of `FRAME`.
+#[cfg(test)]
+const FRAME_INNER: Shape = Shape::new(2.0, 3.0, 12.0, 10.0, 1.0);
 
 /// The gauge opens at the bottom: it starts at the lower left and sweeps
 /// clockwise over the top to the lower right.
@@ -181,14 +200,20 @@ pub fn app_svg() -> String {
         svg.push_str(&element);
         svg.push('\n');
     };
+    let Shape { x, y, w, h, r } = TILE_SHAPE;
     line(format!(
-        r#"<circle cx="{c}" cy="{c}" r="{}" fill="{}"/>"#,
-        d.disc,
+        r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" fill="{}"/>"#,
         hex(TILE)
     ));
+    let (x, y, w, h, r) = (
+        x + edge / 2.0,
+        y + edge / 2.0,
+        w - edge,
+        h - edge,
+        r - edge / 2.0,
+    );
     line(format!(
-        r#"<circle cx="{c}" cy="{c}" r="{}" fill="none" stroke="{}" stroke-opacity="{}" stroke-width="{edge}"/>"#,
-        d.disc - edge / 2.0,
+        r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" fill="none" stroke="{}" stroke-opacity="{}" stroke-width="{edge}"/>"#,
         hex(EDGE),
         opacity(EDGE)
     ));
@@ -257,6 +282,7 @@ pub fn symbolic_svg(state: State) -> String {
     format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\">\n  \
          <style id=\"current-color-scheme\" type=\"text/css\">.ColorScheme-Text {{ color: #232629; }}</style>\n  \
+         <path class=\"ColorScheme-Text\" style=\"fill:currentColor\" fill-rule=\"evenodd\" d=\"{FRAME}\"/>\n  \
          <path class=\"ColorScheme-Text\" style=\"{stroke};stroke:currentColor;stroke-opacity:0.6\" d=\"{track}\"/>\n  \
          <path{class} style=\"{stroke};stroke:{level_colour}\" d=\"{level}\"/>\n  \
          <circle{class} style=\"fill:{level_colour}\" cx=\"{c}\" cy=\"{c}\" r=\"{hub}\"/>\n\
@@ -343,19 +369,20 @@ fn draw_dial(canvas: &mut Canvas, state: State, unit: f32) {
     });
 }
 
-/// The dark disc and its faint edge, also behind each menu row's meters.
+/// The dark box and its faint edge, also behind each menu row's meters.
 fn draw_tile(canvas: &mut Canvas, unit: f32) {
-    let d = DIAL;
-    let (c, radius, edge) = (d.centre() * unit, d.disc * unit, d.edge * unit);
-    let bounds = Rect {
-        x0: c - radius,
-        y0: c - radius,
-        x1: c + radius,
-        y1: c + radius,
+    let tile = TILE_SHAPE.rect(unit);
+    let radius = TILE_SHAPE.r * unit;
+    let edge = DIAL.edge * unit;
+    let inner = Rect {
+        x0: tile.x0 + edge,
+        y0: tile.y0 + edge,
+        x1: tile.x1 - edge,
+        y1: tile.y1 - edge,
     };
-    canvas.cover(bounds, TILE, |x, y| disc_coverage(x, y, c, radius));
-    canvas.cover(bounds, EDGE, |x, y| {
-        disc_coverage(x, y, c, radius) - disc_coverage(x, y, c, radius - edge)
+    canvas.cover(tile, TILE, |x, y| rounded_coverage(x, y, tile, radius));
+    canvas.cover(tile, EDGE, |x, y| {
+        rounded_coverage(x, y, tile, radius) - rounded_coverage(x, y, inner, radius - edge)
     });
 }
 
@@ -502,31 +529,32 @@ mod tests {
     }
 
     #[test]
-    fn the_row_meters_sit_inside_the_disc() {
-        let inner = DIAL.disc - DIAL.edge;
+    fn the_row_meters_sit_inside_the_tile() {
+        let inner = TILE_SHAPE.inset(DIAL.edge);
         for m in ROW_TRACKS.iter().chain([&WIDE_METER]) {
             assert!(m.r * 2.0 <= m.w.min(m.h), "{m:?} is rounded past a pill");
-            for (x, y) in [
-                (m.x, m.y),
-                (m.x + m.w, m.y),
-                (m.x, m.y + m.h),
-                (m.x + m.w, m.y + m.h),
-            ] {
-                let from_centre = (x - DIAL.centre()).hypot(y - DIAL.centre());
-                assert!(from_centre < inner, "{m:?} reaches the edge");
-            }
+            assert!(
+                m.x > inner.x
+                    && m.y > inner.y
+                    && m.x + m.w < inner.x + inner.w
+                    && m.y + m.h < inner.y + inner.h,
+                "{m:?} reaches the edge"
+            );
         }
     }
 
     #[test]
-    fn the_dial_sits_inside_the_disc_and_the_symbolic_one_inside_its_grid() {
-        const {
-            let reach = DIAL.arc_radius + DIAL.arc_width / 2.0;
-            assert!(reach < DIAL.disc - DIAL.edge, "the arc reaches the edge");
-            assert!(DIAL.hub < DIAL.arc_radius - DIAL.arc_width / 2.0);
-            let reach = SYMBOLIC.arc_radius + SYMBOLIC.arc_width / 2.0;
-            assert!(reach < SYMBOLIC.size / 2.0, "the symbolic arc is clipped");
-        }
+    fn the_dial_sits_inside_the_tile_and_the_symbolic_one_inside_its_frame() {
+        let reach = DIAL.arc_radius + DIAL.arc_width / 2.0;
+        let inner = TILE_SHAPE.inset(DIAL.edge);
+        assert!(DIAL.centre() - reach > inner.y && DIAL.centre() + reach < inner.y + inner.h);
+        const { assert!(DIAL.hub < DIAL.arc_radius - DIAL.arc_width / 2.0) };
+        // One unit clear of the frame's inside, as the old symbolic meters were.
+        let reach = SYMBOLIC.arc_radius + SYMBOLIC.arc_width / 2.0;
+        let inner = FRAME_INNER.inset(1.0);
+        assert!(SYMBOLIC.centre() - reach >= inner.y);
+        assert!(SYMBOLIC.centre() + reach <= inner.y + inner.h);
+        assert!(FRAME.contains("M3 2h10a2 2 0 0 1 2 2v8"));
     }
 
     fn luminance(Rgba(r, g, b, _): Rgba) -> f32 {
