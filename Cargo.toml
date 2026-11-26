@@ -22,7 +22,7 @@ ksni = { version = "0.3.6", optional = true }
 # The PNG meters on the tray's menu rows (src/png.rs).
 png = { version = "0.18.1", optional = true }
 # The vinoPilot apps and the tray menu icons every vinoPilot tray shares; no egui.
-vino-ui = { package = "vino-user-interface", version = "0.5.2", default-features = false, optional = true }
+vino-ui = { package = "vino-user-interface", version = "0.5.5", default-features = false, optional = true }
 # The --json output. serde is in the tray's tree already, through zbus.
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
