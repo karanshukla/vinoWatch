@@ -48,10 +48,10 @@ impl Update {
         match self {
             Update::Unchecked => "Check for updates".into(),
             Update::Checking => "Checking for updates…".into(),
-            Update::UpToDate => "Up to date (check again)".into(),
+            Update::UpToDate => "Up to date".into(),
             Update::Available(tag) => format!("Update to {tag}"),
             Update::Installing(tag) => format!("Installing {tag}…"),
-            Update::Failed(why) => format!("Update failed ({}). Try again", clip(why)),
+            Update::Failed(why) => format!("Update failed: {} — Retry", clip(why)),
         }
     }
 }
@@ -122,23 +122,21 @@ impl Driver {
                 verdict: Verdict::Stuck,
                 after_reset,
             } => if *after_reset {
-                "NPU driver is still stuck after reload. Reboot required."
+                "NPU driver still stuck — reboot needed"
             } else {
-                "NPU driver stuck. Close apps using the NPU, then reset it."
+                "NPU driver stuck"
             }
             .into(),
             Driver::Checked {
                 verdict: Verdict::Unknown(why),
                 after_reset,
-            } => format!(
-                "{}NPU check inconclusive: {}",
+            } => {
                 if *after_reset {
-                    "NPU driver reloaded. "
+                    format!("Driver reloaded — check failed: {}", clip(why))
                 } else {
-                    ""
-                },
-                clip(why)
-            ),
+                    format!("NPU check failed: {}", clip(why))
+                }
+            }
             Driver::ResetFailed(why) => format!("NPU reset failed: {}", clip(why)),
         })
     }
@@ -164,7 +162,7 @@ mod tests {
             after_reset: true,
         };
         let label = driver.label().unwrap();
-        assert!(label.starts_with("NPU driver reloaded. NPU check inconclusive: xxx"));
+        assert!(label.starts_with("Driver reloaded — check failed: xxx"));
         assert!(label.ends_with("x…"));
         assert!(label.chars().count() < 200);
     }
