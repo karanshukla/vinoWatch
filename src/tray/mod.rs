@@ -125,16 +125,38 @@ impl WatchTray {
     fn summary(&self) -> String {
         let apps = self.snap.procs.iter().filter(|p| p.openvino).count();
         let helpers = self.snap.procs.len() - apps;
-        let helpers = match helpers {
-            0 => String::new(),
-            1 => " + 1 helper".into(),
-            n => format!(" + {n} helpers"),
-        };
-        format!(
-            "{} · {apps} OpenVINO process{}{helpers}",
-            self.snap.npu_label(),
-            if apps == 1 { "" } else { "es" }
-        )
+        let npu = self.snap.npu_label();
+        match (apps, helpers) {
+            (0, 0) => format!("{npu} · Idle"),
+            (0, 1) => format!("{npu} · 1 helper"),
+            (0, h) => format!("{npu} · {h} helpers"),
+            (a, 0) => format!("{npu} · {a} app{}", if a == 1 { "" } else { "s" }),
+            (a, h) => format!(
+                "{npu} · {a} app{} + {h} helper{}",
+                if a == 1 { "" } else { "s" },
+                if h == 1 { "" } else { "s" },
+            ),
+        }
+    }
+
+    pub(super) fn ram_summary(&self) -> String {
+        const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+        let gib = |bytes: u64| bytes as f64 / GIB;
+        let used = gib(self.snap.openvino_bytes());
+        match self.snap.memory {
+            Some(crate::detect::Memory { total, available }) => format!(
+                "OpenVINO: {used:.1} GiB RAM · {:.1} / {:.1} GiB {}free{}",
+                gib(available),
+                gib(total),
+                if self.snap.cgroup_limited {
+                    "cgroup "
+                } else {
+                    ""
+                },
+                if self.snap.low_memory { " (low)" } else { "" },
+            ),
+            None => format!("OpenVINO: {used:.1} GiB RAM"),
+        }
     }
 
     /// Something is running on OpenVINO: a listed process that loads it, or
@@ -240,7 +262,7 @@ impl ksni::Tray for WatchTray {
             title: "vinoWatch".into(),
             description: [
                 Some(self.summary()),
-                Some(self.snap.ram_label()),
+                Some(self.ram_summary()),
                 self.driver.label(),
             ]
             .into_iter()
@@ -344,10 +366,7 @@ mod tests {
             ..proc_row(1)
         });
         assert_eq!(tray.state(), State::Idle);
-        assert!(
-            tray.summary()
-                .ends_with("· 0 OpenVINO processes + 1 helper")
-        );
+        assert!(tray.summary().ends_with("· 1 helper"));
     }
 
     #[test]

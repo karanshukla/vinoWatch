@@ -97,7 +97,7 @@ impl WatchTray {
     fn status_rows(&self) -> Vec<MenuItem<Self>> {
         let mut rows = vec![
             note(self.summary(), self.npu_icon()),
-            note(self.snap.ram_label(), self.ram_icon()),
+            note(self.ram_summary(), self.ram_icon()),
         ];
         rows.extend(
             self.driver
@@ -110,7 +110,7 @@ impl WatchTray {
     fn process_rows(&self) -> Vec<MenuItem<Self>> {
         if self.snap.procs.is_empty() {
             let empty = RowIcon::Drawn(icon::meter_png(State::Idle, &[0.0; 3]));
-            return vec![note("No OpenVINO processes".into(), empty)];
+            return vec![note("No OpenVINO apps running".into(), empty)];
         }
         self.snap
             .procs
@@ -233,7 +233,7 @@ impl WatchTray {
         if !reset_installed {
             if self.driver.stuck() {
                 items.push(note(
-                    "To enable reset, run: sudo ./install-npu-reset.sh".into(),
+                    "To enable reset: sudo ~/.local/share/vinowatch/install-npu-reset.sh".into(),
                     RowIcon::Named(MenuIcon::Info.name()),
                 ));
             }
@@ -251,11 +251,20 @@ impl WatchTray {
             .into(),
         );
         if !holders.is_empty() {
+            let mut names: Vec<String> = Vec::new();
+            for p in &holders {
+                let name = match p.project {
+                    Some(project) => project.to_string(),
+                    None => p.name.clone(),
+                };
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
             items.push(note(
-                "Close these apps before resetting:".into(),
+                format!("Close to reset: {}", names.join(", ")),
                 RowIcon::Named(MenuIcon::Warning.name()),
             ));
-            items.extend(self.holders().map(|p| note(p.label(), self.proc_icon(p))));
         }
         items
     }
@@ -414,10 +423,7 @@ mod tests {
         tray.update = Update::Failed("couldn't reach GitHub".into());
         assert_eq!(
             update_label(&tray, true),
-            (
-                "Update failed (couldn't reach GitHub). Try again".into(),
-                true
-            )
+            ("Update failed: couldn't reach GitHub — Retry".into(), true)
         );
     }
 
@@ -459,7 +465,7 @@ mod tests {
             texts(tray.driver_items(false)),
             [
                 "Check NPU driver",
-                "To enable reset, run: sudo ./install-npu-reset.sh"
+                "To enable reset: sudo ~/.local/share/vinowatch/install-npu-reset.sh"
             ]
         );
         let enabled = |tray: &WatchTray| {
@@ -478,8 +484,8 @@ mod tests {
         });
         assert_eq!(enabled(&tray), Some(false));
         let items = texts(tray.driver_items(true));
-        assert_eq!(items[2], "Close these apps before resetting:");
-        assert!(items[3].starts_with("vino__speak pid 7"), "{}", items[3]);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[2], "Close to reset: vino__speak");
         tray.driver = Driver::Resetting;
         assert_eq!(enabled(&tray), Some(false));
     }
@@ -544,13 +550,12 @@ mod tests {
         assert_eq!(
             texts(active().build_menu(EVERYTHING)),
             [
-                "NPU 40% · 1 OpenVINO process",
-                "OpenVINO apps hold 0.5 GiB of 16.0 GiB RAM, 8.0 GiB available",
+                "NPU 40% · 1 app",
+                "OpenVINO: 0.5 GiB RAM · 8.0 / 16.0 GiB free",
                 speak,
                 "Check NPU driver",
                 "Reset NPU driver",
-                "Close these apps before resetting:",
-                speak,
+                "Close to reset: vino__speak",
                 version.as_str(),
                 "Check for updates",
                 "Quit",
@@ -583,7 +588,7 @@ mod tests {
     #[test]
     fn an_empty_list_says_so_in_one_row() {
         let rows = texts(WatchTray::new(None, None).build_menu(NOTHING));
-        assert_eq!(rows[2], "No OpenVINO processes");
+        assert_eq!(rows[2], "No OpenVINO apps running");
         assert_eq!(rows.len(), 6);
     }
 }

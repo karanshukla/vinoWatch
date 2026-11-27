@@ -106,8 +106,8 @@ fn check_npu(explicit: Option<&Path>) -> ExitCode {
         }
         driver::Verdict::Stuck => {
             println!(
-                "NPU driver stuck: close the apps using the NPU, then reload it with\n  \
-                 systemctl start {} (after sudo ./install-npu-reset.sh), or\n  \
+                "NPU driver stuck: close apps using the NPU, then reload it with\n  \
+                 systemctl start {} (after sudo ~/.local/share/vinowatch/install-npu-reset.sh), or\n  \
                  sudo modprobe -r intel_vpu && sudo modprobe intel_vpu",
                 driver::RESET_UNIT
             );
