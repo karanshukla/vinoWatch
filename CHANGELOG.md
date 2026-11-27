@@ -5,6 +5,13 @@ All notable changes to vinoWatch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-11-27
+
+### Changed
+
+- Tray menu text is shorter, and duplicate NPU holder rows are collapsed into one.
+- Built on vino-ui 0.6.1.
+
 ## [0.8.0] - 2026-11-23
 
 ### Changed
